@@ -1,0 +1,143 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --radius: 0.5rem;
+  --background: 248 249 250;
+  --foreground: 32 37 42;
+  --card: 255 255 255;
+  --card-foreground: 32 37 42;
+  --popover: 255 255 255;
+  --popover-foreground: 32 37 42;
+  --primary: 52 143 226;
+  --primary-foreground: 255 255 255;
+  --secondary: 233 236 239;
+  --secondary-foreground: 32 37 42;
+  --muted: 233 236 239;
+  --muted-foreground: 108 117 125;
+  --accent: 233 236 239;
+  --accent-foreground: 32 37 42;
+  --destructive: 255 91 87;
+  --destructive-foreground: 255 255 255;
+  --border: 222 226 230;
+  --input: 222 226 230;
+  --ring: 52 143 226;
+  --success: 0 172 172;
+  --warning: 245 156 26;
+  --info: 73 182 214;
+  --sidebar-bg: 255 255 255;
+  --sidebar-text: 32 37 42;
+  --sidebar-border: 222 226 230;
+  --sidebar-hover: 248 249 250;
+  --sidebar-active: 233 236 239;
+  --header-bg: 255 255 255;
+  --header-border: 222 226 230;
+}
+
+.dark {
+  --background: 41 49 56;
+  --foreground: 255 255 255;
+  --card: 45 53 60;
+  --card-foreground: 255 255 255;
+  --popover: 45 53 60;
+  --popover-foreground: 255 255 255;
+  --primary: 52 143 226;
+  --primary-foreground: 255 255 255;
+  --secondary: 55 63 72;
+  --secondary-foreground: 203 213 225;
+  --muted: 55 63 72;
+  --muted-foreground: 173 181 189;
+  --accent: 61 70 80;
+  --accent-foreground: 255 255 255;
+  --destructive: 255 91 87;
+  --destructive-foreground: 255 255 255;
+  --border: 73 80 87;
+  --input: 73 80 87;
+  --ring: 52 143 226;
+  --success: 0 172 172;
+  --warning: 245 156 26;
+  --info: 73 182 214;
+  --sidebar-bg: 21 28 35;
+  --sidebar-text: 255 255 255;
+  --sidebar-border: 73 80 87;
+  --sidebar-hover: 41 49 56;
+  --sidebar-active: 61 70 80;
+  --header-bg: 21 28 35;
+  --header-border: 13 115 208;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    margin: 0;
+    min-height: 100vh;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.5;
+    transition: background-color .3s ease, color .3s ease;
+  }
+  button {
+    font-family: inherit;
+  }
+  * {
+    scrollbar-width: thin;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--border));
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--muted-foreground));
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: rgb(var(--card) / 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgb(var(--border) / 0.4);
+  }
+  .glass-strong {
+    background: rgb(var(--card) / 0.95);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgb(var(--border) / 0.6);
+  }
+  .panel-header {
+    @apply text-[10px] font-semibold uppercase tracking-wider text-muted-foreground;
+    letter-spacing: 0.08em;
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-down {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}

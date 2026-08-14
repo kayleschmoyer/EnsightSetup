@@ -1,0 +1,25 @@
+{
+  "customer": {
+    "location": {
+      "address": "123 Main St",
+      "city": "City",
+      "state": "PA",
+      "zip": "18102",
+      "googleMapsUrl": "https://maps.google.com/?q=..."
+    }
+  },
+  "support": {
+    "maintenance": {
+      "providerOptions": [
+        { "value": "", "label": "Not set" },
+        { "value": "ensight", "label": "Ensight" },
+        { "value": "aps", "label": "APS" },
+        { "value": "other", "label": "Other" }
+      ],
+      "provider": "ensight",
+      "other": ""
+    },
+    "enterpriseSite": true,
+    "support24Hour": true
+  }
+}
