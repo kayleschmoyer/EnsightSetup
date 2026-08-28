@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ensureLinkedZonePolygon,
+  isDuplicateZoneName,
   isZoneLevel,
   nextZoneLevelName,
   resolveCameraSheetLevelName,
@@ -82,5 +83,36 @@ describe('zoneLevelUtils', () => {
     const placement = { id: 1, name: 'Level 1', internalName: 'Level 1' };
     expect(resolveCameraSheetLevelName({ trafficFlow: { direction: 'in' } }, placement, { levels: [placement] }))
       .toBe('Level 1');
+  });
+
+  describe('isDuplicateZoneName', () => {
+    const levels = [
+      { id: 1, name: 'Level 1' },
+      { id: 10, name: 'Zone 3', parentLevelId: 1, isZone: true },
+      { id: 11, name: 'Zone 2', parentLevelId: 2, isZone: true },
+    ];
+
+    it('flags a name already used by another zone under the same parent', () => {
+      expect(isDuplicateZoneName('Zone 3', 1, levels)).toBe(true);
+      expect(isDuplicateZoneName('zone 3', 1, levels)).toBe(true); // case-insensitive
+      expect(isDuplicateZoneName('  Zone 3  ', 1, levels)).toBe(true); // trims whitespace
+    });
+
+    it('allows the same name under a different parent', () => {
+      expect(isDuplicateZoneName('Zone 2', 1, levels)).toBe(false);
+    });
+
+    it('allows a genuinely new name under the same parent', () => {
+      expect(isDuplicateZoneName('Zone 4', 1, levels)).toBe(false);
+    });
+
+    it('excludes the zone being edited from its own collision check', () => {
+      expect(isDuplicateZoneName('Zone 3', 1, levels, 10)).toBe(false);
+    });
+
+    it('ignores an empty name', () => {
+      expect(isDuplicateZoneName('', 1, levels)).toBe(false);
+      expect(isDuplicateZoneName('   ', 1, levels)).toBe(false);
+    });
   });
 });

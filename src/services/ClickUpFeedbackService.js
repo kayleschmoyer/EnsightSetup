@@ -131,7 +131,7 @@ export async function submitClickUpFeedback(payload) {
 /** Build a short context blurb from the current app location. */
 export function buildFeedbackContext({
   customer = null,
-  garage = null,
+  site = null,
   level = null,
   pathname = '',
 } = {}) {
@@ -139,7 +139,7 @@ export function buildFeedbackContext({
   if (customer?.friendlyName || customer?.customerId) {
     lines.push(`Customer: ${customer.friendlyName || customer.customerId}`);
   }
-  if (garage?.name) lines.push(`Site: ${garage.name}`);
+  if (site?.name) lines.push(`Site: ${site.name}`);
   if (level?.name) lines.push(`Level: ${level.name}`);
   const path = pathname || (typeof window !== 'undefined' ? window.location.pathname : '');
   if (path) lines.push(`URL: ${path}`);

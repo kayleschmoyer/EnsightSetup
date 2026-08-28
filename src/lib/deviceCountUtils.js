@@ -11,10 +11,10 @@ export function signLogicalKey(device) {
 }
 
 /**
- * Flatten garage devices, counting each logical sign once (signs may appear on multiple levels).
+ * Flatten site devices, counting each logical sign once (signs may appear on multiple levels).
  */
-export function uniqueGarageDevices(garage) {
-  const levels = garage?.levels ?? [];
+export function uniqueSiteDevices(site) {
+  const levels = site?.levels ?? [];
   const seenSigns = new Set();
   const unique = [];
 
@@ -32,35 +32,35 @@ export function uniqueGarageDevices(garage) {
   return unique;
 }
 
-export function countGarageDevices(garage) {
-  return uniqueGarageDevices(garage).length;
+export function countSiteDevices(site) {
+  return uniqueSiteDevices(site).length;
 }
 
-export function countGarageDevicesByType(garage) {
+export function countSiteDevicesByType(site) {
   const counts = {};
-  uniqueGarageDevices(garage).forEach((device) => {
+  uniqueSiteDevices(site).forEach((device) => {
     if (device.type) counts[device.type] = (counts[device.type] || 0) + 1;
   });
   return counts;
 }
 
-export function countGarageDevicesWithTypePrefix(garage, prefix) {
-  return uniqueGarageDevices(garage).filter((d) => d.type?.startsWith(prefix)).length;
+export function countSiteDevicesWithTypePrefix(site, prefix) {
+  return uniqueSiteDevices(site).filter((d) => d.type?.startsWith(prefix)).length;
 }
 
-export function countGaragesDevices(garages) {
-  return (garages ?? []).reduce((sum, garage) => sum + countGarageDevices(garage), 0);
+export function countSitesDevices(sites) {
+  return (sites ?? []).reduce((sum, site) => sum + countSiteDevices(site), 0);
 }
 
-export function countGaragesDevicesWithTypePrefix(garages, prefix) {
-  return (garages ?? []).reduce(
-    (sum, garage) => sum + countGarageDevicesWithTypePrefix(garage, prefix),
+export function countSitesDevicesWithTypePrefix(sites, prefix) {
+  return (sites ?? []).reduce(
+    (sum, site) => sum + countSiteDevicesWithTypePrefix(site, prefix),
     0,
   );
 }
 
-function findSignInGarage(garage, deviceId) {
-  for (const level of garage?.levels || []) {
+function findSignInSite(site, deviceId) {
+  for (const level of site?.levels || []) {
     const device = (level.devices || []).find((d) => d.id === deviceId);
     if (device) return device;
   }
@@ -70,16 +70,16 @@ function findSignInGarage(garage, deviceId) {
 /**
  * Apply a sign update to all level copies sharing the same logical sign key.
  */
-export function applySignUpdateAcrossGarage(garage, deviceId, nextDevice, options = {}) {
+export function applySignUpdateAcrossSite(site, deviceId, nextDevice, options = {}) {
   const { stageLevelId, stageMeta = {} } = options;
-  const source = findSignInGarage(garage, deviceId);
-  if (!source?.type?.startsWith('sign-')) return garage?.levels;
+  const source = findSignInSite(site, deviceId);
+  if (!source?.type?.startsWith('sign-')) return site?.levels;
 
   const matchKey = source.signLogicalKey || signLogicalKey(source);
   const newKey = signLogicalKey(nextDevice);
   const { id: _ignoredId, ...sharedFields } = nextDevice;
 
-  return (garage.levels || []).map((level) => {
+  return (site.levels || []).map((level) => {
     const devices = (level.devices || []).map((d) => {
       if (!d.type?.startsWith('sign-')) return d;
       const dKey = d.signLogicalKey || signLogicalKey(d);
@@ -93,10 +93,10 @@ export function applySignUpdateAcrossGarage(garage, deviceId, nextDevice, option
   });
 }
 
-function maxDeviceId(garages) {
+function maxDeviceId(sites) {
   let max = 0;
-  for (const garage of garages || []) {
-    for (const level of garage.levels || []) {
+  for (const site of sites || []) {
+    for (const level of site.levels || []) {
       for (const device of level.devices || []) {
         if (Number.isFinite(device.id) && device.id > max) max = device.id;
       }
@@ -105,26 +105,26 @@ function maxDeviceId(garages) {
   return max;
 }
 
-function findSignById(garages, deviceId) {
-  for (const garage of garages || []) {
-    for (const level of garage.levels || []) {
+function findSignById(sites, deviceId) {
+  for (const site of sites || []) {
+    for (const level of site.levels || []) {
       const device = (level.devices || []).find((d) => d.id === deviceId);
-      if (device) return { garage, level, device };
+      if (device) return { site, level, device };
     }
   }
   return null;
 }
 
-function collectSignCopies(garages, matchKey) {
+function collectSignCopies(sites, matchKey) {
   const copies = new Map();
   if (!matchKey) return copies;
-  for (const garage of garages || []) {
-    for (const level of garage.levels || []) {
+  for (const site of sites || []) {
+    for (const level of site.levels || []) {
       for (const device of level.devices || []) {
         if (!device.type?.startsWith('sign-')) continue;
         const dKey = device.signLogicalKey || signLogicalKey(device);
         if (dKey === matchKey) {
-          copies.set(`${garage.id}:${level.id}`, device);
+          copies.set(`${site.id}:${level.id}`, device);
         }
       }
     }
@@ -132,51 +132,51 @@ function collectSignCopies(garages, matchKey) {
   return copies;
 }
 
-function targetLevelIdsForSign(nextDevice, targetGarage) {
-  if (!targetGarage) return [];
+function targetLevelIdsForSign(nextDevice, targetSite) {
+  if (!targetSite) return [];
   if (nextDevice.displayLevelAll) {
-    return (targetGarage.levels || []).map((level) => level.id);
+    return (targetSite.levels || []).map((level) => level.id);
   }
   return Array.isArray(nextDevice.displayLevelIds) ? nextDevice.displayLevelIds : [];
 }
 
 /**
- * Reconcile sign copies across garages when display level assignment changes,
+ * Reconcile sign copies across sites when display level assignment changes,
  * otherwise propagate shared fields to existing copies.
  */
-export function reconcileSignInGarages(garages, deviceId, nextDevice, options = {}) {
-  const { stageGarageId, stageLevelId, stageMeta = {} } = options;
-  const located = findSignById(garages, deviceId);
-  if (!located?.device?.type?.startsWith('sign-')) return garages;
+export function reconcileSignInSites(sites, deviceId, nextDevice, options = {}) {
+  const { stageSiteId, stageLevelId, stageMeta = {} } = options;
+  const located = findSignById(sites, deviceId);
+  if (!located?.device?.type?.startsWith('sign-')) return sites;
 
   const source = located.device;
   const matchKey = source.signLogicalKey || signLogicalKey(source);
   const newKey = signLogicalKey(nextDevice);
   const { id: _ignoredId, ...sharedFields } = nextDevice;
 
-  const targetGarage = garages.find((g) => g.id === nextDevice.displayGarageId);
-  const targetLevelIds = targetLevelIdsForSign(nextDevice, targetGarage);
-  const canPlace = targetGarage != null && (nextDevice.displayLevelAll || targetLevelIds.length > 0);
+  const targetSite = sites.find((s) => s.id === nextDevice.displaySiteId);
+  const targetLevelIds = targetLevelIdsForSign(nextDevice, targetSite);
+  const canPlace = targetSite != null && (nextDevice.displayLevelAll || targetLevelIds.length > 0);
 
   if (!canPlace) {
-    const stageGarage = garages.find((g) => g.id === stageGarageId);
-    if (!stageGarage) return garages;
-    return garages.map((g) => (g.id !== stageGarageId ? g : {
-      ...g,
-      levels: applySignUpdateAcrossGarage(stageGarage, deviceId, nextDevice, {
+    const stageSite = sites.find((s) => s.id === stageSiteId);
+    if (!stageSite) return sites;
+    return sites.map((s) => (s.id !== stageSiteId ? s : {
+      ...s,
+      levels: applySignUpdateAcrossSite(stageSite, deviceId, nextDevice, {
         stageLevelId,
         stageMeta,
       }),
     }));
   }
 
-  const existingCopies = collectSignCopies(garages, matchKey);
-  let nextId = maxDeviceId(garages) + 1;
+  const existingCopies = collectSignCopies(sites, matchKey);
+  let nextId = maxDeviceId(sites) + 1;
   const template = { ...source, ...sharedFields, signLogicalKey: newKey };
 
-  let nextGarages = garages.map((garage) => ({
-    ...garage,
-    levels: (garage.levels || []).map((level) => ({
+  let nextSites = sites.map((site) => ({
+    ...site,
+    levels: (site.levels || []).map((level) => ({
       ...level,
       devices: (level.devices || []).filter((device) => {
         if (!device.type?.startsWith('sign-')) return true;
@@ -186,19 +186,19 @@ export function reconcileSignInGarages(garages, deviceId, nextDevice, options = 
     })),
   }));
 
-  const garageIndex = nextGarages.findIndex((g) => g.id === targetGarage.id);
-  if (garageIndex < 0) return nextGarages;
+  const siteIndex = nextSites.findIndex((s) => s.id === targetSite.id);
+  if (siteIndex < 0) return nextSites;
 
-  const updatedGarage = { ...nextGarages[garageIndex] };
-  updatedGarage.levels = (updatedGarage.levels || []).map((level) => {
+  const updatedSite = { ...nextSites[siteIndex] };
+  updatedSite.levels = (updatedSite.levels || []).map((level) => {
     if (!targetLevelIds.includes(level.id)) {
-      const meta = stageGarageId === targetGarage.id && level.id === stageLevelId ? stageMeta : {};
+      const meta = stageSiteId === targetSite.id && level.id === stageLevelId ? stageMeta : {};
       return { ...level, ...meta };
     }
 
-    const copyKey = `${targetGarage.id}:${level.id}`;
+    const copyKey = `${targetSite.id}:${level.id}`;
     const existing = existingCopies.get(copyKey);
-    const isStageLevel = stageGarageId === targetGarage.id && level.id === stageLevelId;
+    const isStageLevel = stageSiteId === targetSite.id && level.id === stageLevelId;
     const copyId = existing?.id ?? (isStageLevel ? deviceId : nextId++);
 
     const copy = {
@@ -221,17 +221,17 @@ export function reconcileSignInGarages(garages, deviceId, nextDevice, options = 
     };
   });
 
-  nextGarages[garageIndex] = updatedGarage;
-  return nextGarages;
+  nextSites[siteIndex] = updatedSite;
+  return nextSites;
 }
 
 /** Remove all level copies of a logical sign. */
-export function removeSignFromGarage(garage, deviceId) {
-  const source = findSignInGarage(garage, deviceId);
-  if (!source?.type?.startsWith('sign-')) return garage?.levels;
+export function removeSignFromSite(site, deviceId) {
+  const source = findSignInSite(site, deviceId);
+  if (!source?.type?.startsWith('sign-')) return site?.levels;
 
   const matchKey = source.signLogicalKey || signLogicalKey(source);
-  return (garage.levels || []).map((level) => ({
+  return (site.levels || []).map((level) => ({
     ...level,
     devices: (level.devices || []).filter((d) => {
       if (!d.type?.startsWith('sign-')) return true;

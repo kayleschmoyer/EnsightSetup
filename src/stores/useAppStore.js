@@ -1,112 +1,41 @@
 import { create } from 'zustand';
 import { normalizeCustomersTrafficFlow } from '../lib/trafficFlowUtils';
 import {
-  isSetupContentError,
-  loadCustomerSetupFromSheet,
-  readSetupJsonRevision,
-  serializeCustomerLayout,
-  setupContentHash,
-  writeSetupJsonToSpreadsheet,
-} from '../services/LayoutPersistenceService';
-import { downloadConfigFile } from '../services/GoogleDriveService';
-import { parseExcelFile } from '../services/ExcelParserService';
-import {
-  loadDisplaySchedulesFromTab,
-  loadServersFromNetworkingTab,
-  syncAllConfigTabsForCustomer,
-} from '../services/ConfigSheetSyncService';
-import { applyServersToGarages, mergeGaragesPreferNetworkingServers } from '../lib/configSheetSchema';
+  loadCustomerFull, saveCustomerFull, listCustomers, loadCustomerCard,
+} from '../services/CustomerRepository';
 import { customerHasConfigFile, customerCanSyncToSheet } from '../lib/customerConfigUtils';
-import { customersForLocalPersistence } from '../lib/localPersistence';
 import { compressOversizedBackgrounds } from '../lib/floorPlanBackground';
 import { compressOversizedDevicePhotos } from '../lib/photoPick';
 
 const toSlug = (str) => str?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || '';
 
-const LS_KEY_V1 = 'garageLayout_save';
-const LS_KEY = 'garageLayout_v2';
-const LS_ENABLED_KEY = 'garageLayout_saveEnabled';
+// The database is the only store of customer data — nothing about customers
+// is persisted in this browser anymore. Signed out means the app shows
+// nothing; signing in pulls the list fresh from the database.
 
-function parseStoredState(raw) {
-  const data = JSON.parse(raw);
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
-
-  if (Array.isArray(data.customers)) {
-    return { customers: normalizeCustomersTrafficFlow(data.customers), mode: data.mode };
-  }
-
-  if (Array.isArray(data.garages)) {
-    return {
-      customers: normalizeCustomersTrafficFlow([{
-        id: 1,
-        customerId: 'imported',
-        code: 'IMPORTED',
-        friendlyName: 'Imported Sites',
-        address: '',
-        city: '',
-        state: '',
-        zip: '',
-        mapsUrl: '',
-        garages: data.garages,
-      }]),
-      mode: data.mode,
-    };
-  }
-
-  return null;
-}
-
-function loadLocalState() {
-  try {
-    const rawV2 = localStorage.getItem(LS_KEY);
-    if (rawV2) {
-      const parsed = parseStoredState(rawV2);
-      if (parsed) return parsed;
-    }
-
-    const rawV1 = localStorage.getItem(LS_KEY_V1);
-    if (rawV1) {
-      const migrated = parseStoredState(rawV1);
-      if (migrated) {
-        localStorage.setItem(LS_KEY, JSON.stringify({
-          customers: migrated.customers,
-          mode: migrated.mode,
-        }));
-        return migrated;
-      }
-    }
-  } catch { /* ignore corrupt storage */ }
-  return null;
-}
-
-function saveLocalState(state) {
-  try {
-    // Sheet-synced customers keep only opened-customer stubs locally; SetupJson owns layout.
-    localStorage.setItem(LS_KEY, JSON.stringify({
-      customers: customersForLocalPersistence(state.customers),
-      mode: state.mode,
-    }));
-    return true;
-  } catch {
-    return false;
-  }
-}
+// One-time cleanup of pre-migration persisted blobs so stale customers can
+// never resurface from an old build's storage.
+try {
+  localStorage.removeItem('garageLayout_save');
+  localStorage.removeItem('garageLayout_v2');
+  localStorage.removeItem('garageLayout_saveEnabled');
+} catch { /* ignore unavailable storage */ }
 
 /**
- * `garages: null` means "not read from the sheet yet" and is different from
+ * `sites: null` means "not read from the sheet yet" and is different from
  * `[]`, which means "read, and this customer has no sites". Mutating a customer
  * in the null state would invent layout the sheet never had, so it is refused.
  */
-function updateCustomerGarages(customers, customerId, garagesOrFn) {
+function updateCustomerSites(customers, customerId, sitesOrFn) {
   return customers.map((c) => {
     if (c.id !== customerId) return c;
-    if (c.garages == null && typeof garagesOrFn === 'function') {
-      console.warn('[Garage Editor] Ignored a garage edit before the sheet finished loading.');
+    if (c.sites == null && typeof sitesOrFn === 'function') {
+      console.warn('[Garage Editor] Ignored a site edit before the sheet finished loading.');
       return c;
     }
-    const current = c.garages ?? [];
-    const next = typeof garagesOrFn === 'function' ? garagesOrFn(current) : garagesOrFn;
-    return { ...c, garages: next };
+    const current = c.sites ?? [];
+    const next = typeof sitesOrFn === 'function' ? sitesOrFn(current) : sitesOrFn;
+    return { ...c, sites: next };
   });
 }
 
@@ -117,39 +46,39 @@ export function customerNeedsHydration(customer, hydration) {
   return state !== 'hydrated' && state !== 'absent';
 }
 
-/** Legacy URLs: /{garage-slug}/{level-slug} (pre-customer tier) */
-function findLegacyGarageRoute(customers, parts) {
-  const garageSlug = parts[0];
+/** Legacy URLs: /{site-slug}/{level-slug} (pre-customer tier) */
+function findLegacySiteRoute(customers, parts) {
+  const siteSlug = parts[0];
   const levelSlug = parts[1];
   for (const customer of customers) {
-    const garage = customer.garages?.find((g) => toSlug(g.name) === garageSlug);
-    if (!garage) continue;
+    const site = customer.sites?.find((s) => toSlug(s.name) === siteSlug);
+    if (!site) continue;
     if (parts.length >= 2) {
-      const level = garage.levels?.find((l) => toSlug(l.name) === levelSlug);
+      const level = site.levels?.find((l) => toSlug(l.name) === levelSlug);
       if (level) {
-        return { customer, garage, level, view: 'editor' };
+        return { customer, site, level, view: 'editor' };
       }
-      return { customer, garage, level: null, view: 'levels' };
+      return { customer, site, level: null, view: 'levels' };
     }
-    return { customer, garage, level: null, view: 'garages' };
+    return { customer, site, level: null, view: 'sites' };
   }
   return null;
 }
 
-function applyRouteSelection(set, get, { customer, garage, level, view }, { replace = false } = {}) {
+function applyRouteSelection(set, get, { customer, site, level, view }, { replace = false } = {}) {
   set({
     selectedCustomerId: customer.id,
-    selectedGarageId: garage?.id ?? null,
+    selectedSiteId: site?.id ?? null,
     selectedLevelId: level?.id ?? null,
     currentView: view,
   });
-  get().updateUrl(customer.id, garage?.id ?? null, level?.id ?? null, { replace });
+  get().updateUrl(customer.id, site?.id ?? null, level?.id ?? null, { replace });
 }
 
 function resolveRouteFromParts(customers, parts) {
   const resetPatch = {
     selectedCustomerId: null,
-    selectedGarageId: null,
+    selectedSiteId: null,
     selectedLevelId: null,
     currentView: 'customers',
   };
@@ -159,7 +88,7 @@ function resolveRouteFromParts(customers, parts) {
       type: 'patch',
       patch: {
         selectedCustomerId: null,
-        selectedGarageId: null,
+        selectedSiteId: null,
         selectedLevelId: null,
         currentView: 'customers',
       },
@@ -169,71 +98,71 @@ function resolveRouteFromParts(customers, parts) {
 
   const customer = customers.find((c) => c.customerId === parts[0]);
   if (customer) {
-    // Layout has not been read from the sheet yet, so the garage/level slugs
+    // Layout has not been read from the sheet yet, so the site/level slugs
     // cannot be resolved. Remember them and finish the navigation once the
     // snapshot lands — never rewrite the URL to '/' in the meantime, which is
     // what used to make deep links die in a cold browser.
-    if (customer.garages == null) {
+    if (customer.sites == null) {
       return {
         type: 'pending',
         patch: {
           selectedCustomerId: customer.id,
-          selectedGarageId: null,
+          selectedSiteId: null,
           selectedLevelId: null,
-          currentView: 'garages',
+          currentView: 'sites',
         },
         pendingRoute: {
           customerId: customer.id,
-          garageSlug: parts[1] ?? null,
+          siteSlug: parts[1] ?? null,
           levelSlug: parts[2] ?? null,
         },
         rewriteUrl: null,
       };
     }
 
-    const garages = customer.garages ?? [];
+    const sites = customer.sites ?? [];
     const base = { selectedCustomerId: customer.id };
 
     if (parts.length >= 2) {
-      const garage = garages.find((g) => toSlug(g.name) === parts[1]);
-      if (garage) {
-        const levels = garage.levels ?? [];
+      const site = sites.find((s) => toSlug(s.name) === parts[1]);
+      if (site) {
+        const levels = site.levels ?? [];
         if (parts.length >= 3) {
           const level = levels.find((l) => toSlug(l.name) === parts[2]);
           if (level) {
             return {
               type: 'patch',
-              patch: { ...base, selectedGarageId: garage.id, selectedLevelId: level.id, currentView: 'editor' },
+              patch: { ...base, selectedSiteId: site.id, selectedLevelId: level.id, currentView: 'editor' },
               rewriteUrl: null,
             };
           }
           return {
             type: 'patch',
-            patch: { ...base, selectedGarageId: garage.id, selectedLevelId: null, currentView: 'levels' },
+            patch: { ...base, selectedSiteId: site.id, selectedLevelId: null, currentView: 'levels' },
             rewriteUrl: null,
           };
         }
         return {
           type: 'patch',
-          patch: { ...base, selectedGarageId: garage.id, selectedLevelId: null, currentView: 'levels' },
+          patch: { ...base, selectedSiteId: site.id, selectedLevelId: null, currentView: 'levels' },
           rewriteUrl: null,
         };
       }
       return {
         type: 'patch',
-        patch: { ...base, selectedGarageId: null, selectedLevelId: null, currentView: 'garages' },
+        patch: { ...base, selectedSiteId: null, selectedLevelId: null, currentView: 'sites' },
         rewriteUrl: null,
       };
     }
 
     return {
       type: 'patch',
-      patch: { ...base, selectedGarageId: null, selectedLevelId: null, currentView: 'garages' },
+      patch: { ...base, selectedSiteId: null, selectedLevelId: null, currentView: 'sites' },
       rewriteUrl: null,
     };
   }
 
-  const legacy = findLegacyGarageRoute(customers, parts);
+  const legacy = findLegacySiteRoute(customers, parts);
   if (legacy) {
     return { type: 'legacy', legacy };
   }
@@ -252,7 +181,7 @@ function applyResolvedRoute(set, get, resolved) {
     if (!loggedLegacyUrlRewrite) {
       loggedLegacyUrlRewrite = true;
       console.info(
-        '[Garage Editor] Rewrote legacy URL /{garage}/{level} to /{customerId}/{garage}/{level}.',
+        '[Garage Editor] Rewrote legacy URL /{site}/{level} to /{customerId}/{site}/{level}.',
       );
     }
     applyRouteSelection(set, get, resolved.legacy, { replace: true });
@@ -272,37 +201,26 @@ function applyResolvedRoute(set, get, resolved) {
   }
 }
 
-// Default ON: opened Drive customers must survive refresh so the catalog can
-// show them as opened and deep links can resolve. Users may still opt out in Settings.
-// Missing key → enabled (legacy default was off and cleared "opened" on every reload).
-const _localEnabled = localStorage.getItem(LS_ENABLED_KEY) !== 'false';
-// Always restore any saved customers when present — even if the user later turns
-// the preference off (turning off stops new writes; it does not wipe existing data).
-const _localState = loadLocalState();
-
-// Reclaim quota from older builds that stored full SetupJson layouts (incl. floor plans)
-// for sheet-synced customers. In-memory state still has whatever was loaded; we only
-// rewrite the persisted blob to slim stubs.
-if (_localEnabled && _localState?.customers?.length) {
-  saveLocalState({ customers: _localState.customers, mode: _localState.mode });
-}
-
 const SETUP_AUTOSAVE_DEBOUNCE_MS = 4000;
+
+// Realtime doorbell re-fetches wait a beat before pulling: saveCustomerFull
+// bumps the customers row (the event) *before* writing the child tables, so an
+// immediate read could catch a half-written tree. Child upserts land well
+// inside this window; repeated events for the same customer coalesce.
+const REMOTE_REFETCH_DELAY_MS = 1500;
+const remoteRefetchTimers = new Map();
 
 // Guards so hydrating from (or recording a save to) the sheet doesn't retrigger auto-save.
 let applyingSetupSnapshot = false;
 let setupSaveTimer = null;
 let setupSaveInFlight = false;
 const pendingSetupSaveIds = new Set();
-// Customers confirmed to have no writable Google Sheet (xlsx-only) — skip auto-save.
+// Customers confirmed to have no database row to sync against — skip auto-save.
 const setupSheetUnavailableIds = new Set();
 
 function friendlySetupSyncError(err, action) {
   const message = err?.message || '';
-  if (/sign in|signed in|session expired/i.test(message)) {
-    return `Sign in with Google to ${action} the shared setup.`;
-  }
-  return message || `Failed to ${action} the shared setup.`;
+  return message || `Failed to ${action} the customer's setup.`;
 }
 
 /**
@@ -313,19 +231,19 @@ function friendlySetupSyncError(err, action) {
 async function shrinkOversizedBackgrounds(customerId, customer) {
   let result;
   try {
-    result = await compressOversizedBackgrounds(customer.garages);
+    result = await compressOversizedBackgrounds(customer.sites);
   } catch {
     return customer; // Never block a save on background optimization.
   }
   if (!result.compressed) return customer;
 
-  const { garages } = result;
+  const { sites } = result;
   // Merge only the shrunk backgrounds into live state — edits made while the
   // recompression ran must survive.
   const shrunk = new Map();
-  for (const garage of garages) {
-    for (const level of garage?.levels ?? []) {
-      if (level?.bgImage) shrunk.set(`${garage.id}:${level.id}`, level.bgImage);
+  for (const site of sites) {
+    for (const level of site?.levels ?? []) {
+      if (level?.bgImage) shrunk.set(`${site.id}:${level.id}`, level.bgImage);
     }
   }
 
@@ -336,10 +254,10 @@ async function shrinkOversizedBackgrounds(customerId, customer) {
         if (c.id !== customerId) return c;
         return {
           ...c,
-          garages: (c.garages ?? []).map((garage) => ({
-            ...garage,
-            levels: (garage.levels ?? []).map((level) => {
-              const bgImage = shrunk.get(`${garage.id}:${level.id}`);
+          sites: (c.sites ?? []).map((site) => ({
+            ...site,
+            levels: (site.levels ?? []).map((level) => {
+              const bgImage = shrunk.get(`${site.id}:${level.id}`);
               return bgImage && bgImage !== level.bgImage ? { ...level, bgImage } : level;
             }),
           })),
@@ -349,7 +267,7 @@ async function shrinkOversizedBackgrounds(customerId, customer) {
   } finally {
     applyingSetupSnapshot = false;
   }
-  return { ...customer, garages };
+  return { ...customer, sites };
 }
 
 /**
@@ -359,17 +277,17 @@ async function shrinkOversizedBackgrounds(customerId, customer) {
 async function shrinkOversizedDevicePhotos(customerId, customer) {
   let result;
   try {
-    result = await compressOversizedDevicePhotos(customer.garages);
+    result = await compressOversizedDevicePhotos(customer.sites);
   } catch {
     return customer;
   }
   if (!result.compressed) return customer;
 
   const photosByDevice = new Map();
-  for (const garage of result.garages) {
-    for (const level of garage?.levels ?? []) {
+  for (const site of result.sites) {
+    for (const level of site?.levels ?? []) {
       for (const device of level?.devices ?? []) {
-        photosByDevice.set(`${garage.id}:${level.id}:${device.id}`, {
+        photosByDevice.set(`${site.id}:${level.id}:${device.id}`, {
           viewImage: device.viewImage,
           signImages: device.signImages,
         });
@@ -384,12 +302,12 @@ async function shrinkOversizedDevicePhotos(customerId, customer) {
         if (c.id !== customerId) return c;
         return {
           ...c,
-          garages: (c.garages ?? []).map((garage) => ({
-            ...garage,
-            levels: (garage.levels ?? []).map((level) => ({
+          sites: (c.sites ?? []).map((site) => ({
+            ...site,
+            levels: (site.levels ?? []).map((level) => ({
               ...level,
               devices: (level.devices ?? []).map((device) => {
-                const photos = photosByDevice.get(`${garage.id}:${level.id}:${device.id}`);
+                const photos = photosByDevice.get(`${site.id}:${level.id}:${device.id}`);
                 if (!photos) return device;
                 let changed = false;
                 const next = { ...device };
@@ -417,7 +335,7 @@ async function shrinkOversizedDevicePhotos(customerId, customer) {
   }
 
   return useAppStore.getState().customers.find((c) => c.id === customerId)
-    || { ...customer, garages: result.garages };
+    || { ...customer, sites: result.sites };
 }
 
 /** Floor plans + device photos — both embed in SetupJson and can wedge saves. */
@@ -426,30 +344,6 @@ async function shrinkOversizedSetupMedia(customerId, customer) {
   const live = useAppStore.getState().customers.find((c) => c.id === customerId);
   if (live) current = live;
   return shrinkOversizedDevicePhotos(customerId, current);
-}
-
-/**
- * Bring the config tabs back in line with the app's state.
- *
- * This is what makes the sheet self-correcting. A device the tabs never
- * received gets added, and a value mangled by an older build is rewritten —
- * without anyone having to find that exact row. Only tabs whose content
- * actually differs are written, and rows the app does not own are left alone.
- *
- * Never fails the save: the shared layout is the record, and a config tab that
- * could not be refreshed is a warning, not a lost edit.
- */
-async function refreshConfigTabs(customer) {
-  try {
-    return await syncAllConfigTabsForCustomer({
-      customer,
-      garages: customer.garages || [],
-      servers: customer.garages?.[0]?.servers || [],
-    });
-  } catch (err) {
-    console.warn('[Garage Editor] Config tabs were not fully refreshed:', err?.message);
-    return { changedTabs: [] };
-  }
 }
 
 function scheduleSetupAutoSave() {
@@ -468,7 +362,7 @@ async function runSetupAutoSave() {
     const ids = [...pendingSetupSaveIds];
     pendingSetupSaveIds.clear();
     for (const id of ids) {
-      await useAppStore.getState().saveCustomerSetupToSheet(id);
+      await useAppStore.getState().saveCustomerSetup(id);
     }
   } finally {
     setupSaveInFlight = false;
@@ -477,56 +371,90 @@ async function runSetupAutoSave() {
 }
 
 export const useAppStore = create((set, get) => ({
-  // Local save (browser-only until API sync is available)
-  localSaveEnabled: _localEnabled,
-  localSaveError: null,
-  setLocalSaveEnabled: (enabled) => {
-    localStorage.setItem(LS_ENABLED_KEY, String(enabled));
-    if (enabled) {
-      const saved = saveLocalState(get());
-      set({
-        localSaveEnabled: true,
-        localSaveError: saved ? null : 'Local save failed — browser storage may be full.',
-      });
-      return;
-    }
-    // Opting out stops further writes; keep in-memory + already-stored customers.
-    set({ localSaveEnabled: false, localSaveError: null });
-  },
-  clearLocalSaveError: () => set({ localSaveError: null }),
-
   // Theme
-  mode: _localState?.mode ?? 'dark',
-  setMode: (mode) => {
-    document.documentElement.classList.toggle('dark', mode === 'dark');
-    document.documentElement.classList.toggle('light', mode === 'light');
-    set({ mode });
-  },
-  toggleMode: () => {
-    const newMode = get().mode === 'dark' ? 'light' : 'dark';
-    document.documentElement.classList.toggle('dark', newMode === 'dark');
-    document.documentElement.classList.toggle('light', newMode === 'light');
-    set({ mode: newMode });
-  },
+  // Dark mode only — light mode was removed. Kept as a fixed value (rather
+  // than deleting `mode` outright) so existing dark-mode checks elsewhere
+  // (e.g. ConfigEditor's Monaco theme) don't need to change.
+  mode: 'dark',
 
-  // Customers data
-  customers: _localState?.customers ?? [],
+  // Customers data — in-memory only; Supabase is the single source of truth.
+  customers: [],
   setCustomers: (customersOrFn) => {
     const current = get().customers;
     const next = typeof customersOrFn === 'function' ? customersOrFn(current) : customersOrFn;
     set({ customers: normalizeCustomersTrafficFlow(next) });
   },
 
+  // App session (Google OAuth — see GoogleAuthService.js / App.jsx's subscription).
+  session: null,
+  setSession: (session) => set({ session }),
+
+  /**
+   * Refresh the customer list from Supabase (pointer-only — sites stay null
+   * until loadCustomerSetup hydrates one). Merges rather than replaces so an
+   * already-open, already-hydrated customer isn't reset back to a pointer.
+   */
+  loadCustomersFromSupabase: async () => {
+    let rows;
+    try {
+      rows = await listCustomers();
+    } catch (err) {
+      console.warn('[Garage Editor] Could not load customers from Supabase:', err?.message);
+      return;
+    }
+    set((state) => {
+      const existingById = new Map(state.customers.map((c) => [c.id, c]));
+      const merged = rows.map((row) => {
+        const existing = existingById.get(row.id);
+        if (existing) {
+          return {
+            ...existing,
+            customerId: row.customerId,
+            code: row.code,
+            friendlyName: row.friendlyName,
+            // Hydrated customers already carry config from their full-tree
+            // load; only pointer-only entries take the list's copy so a
+            // mid-edit tree is never partially overwritten.
+            ...(existing.sites == null ? { config: row.config } : {}),
+          };
+        }
+        return {
+          id: row.id,
+          customerId: row.customerId,
+          code: row.code,
+          friendlyName: row.friendlyName,
+          config: row.config,
+          sites: null,
+          lastSetupSavedAt: row.updatedAt,
+        };
+      });
+      const listedIds = new Set(rows.map((r) => r.id));
+      const others = state.customers.filter((c) => !listedIds.has(c.id));
+      return { customers: normalizeCustomersTrafficFlow([...merged, ...others]) };
+    });
+  },
+
   addCustomer: (customer) => {
     const { customers } = get();
-    const numericIds = customers.map((c) => Number(c.id)).filter((n) => Number.isFinite(n) && n > 0);
-    const newId = numericIds.length ? Math.max(...numericIds) + 1 : 1;
-    const requestedId = Number(customer?.id);
-    const id = Number.isFinite(requestedId) && requestedId > 0 ? requestedId : newId;
-    // Keep id last so a null/undefined id from the payload cannot wipe the assigned id
-    // (falsy selectedCustomerId would immediately reset navigation back to customers).
-    const entry = { garages: [], ...customer, id };
-    set({ customers: [...customers, entry] });
+    // Supabase customer ids are uuid strings — only auto-assign a numeric id
+    // when the caller didn't supply one at all (a customer.id of 0/NaN/'' is
+    // never valid, but a uuid string must be preserved, not coerced to NaN).
+    let id = customer?.id;
+    if (id == null) {
+      const numericIds = customers.map((c) => Number(c.id)).filter((n) => Number.isFinite(n) && n > 0);
+      id = numericIds.length ? Math.max(...numericIds) + 1 : 1;
+    }
+    const entry = { sites: [], ...customer, id };
+    // A realtime customers-list refresh can beat this optimistic add back
+    // (see loadCustomersFromSupabase), landing a second row with the same id
+    // before this call's `set` even runs — replace in place rather than
+    // appending so the two never coexist and collide on React key `local:id`
+    // (driveConfigCatalog.js's buildCustomerListRows).
+    const existingIndex = customers.findIndex((c) => c.id === id);
+    const nextCustomers = existingIndex === -1
+      ? [...customers, entry]
+      : customers.map((c, i) => (i === existingIndex ? { ...c, ...entry } : c));
+    set({ customers: nextCustomers });
     return entry;
   },
 
@@ -546,21 +474,122 @@ export const useAppStore = create((set, get) => ({
       ...(isSelected
         ? {
           selectedCustomerId: null,
-          selectedGarageId: null,
+          selectedSiteId: null,
           selectedLevelId: null,
           currentView: 'customers',
         }
         : {}),
     });
-    if (isSelected && ['garages', 'levels', 'editor'].includes(currentView)) {
+    if (isSelected && ['sites', 'levels', 'editor'].includes(currentView)) {
       window.history.replaceState({}, '', '/');
+    }
+  },
+
+  /**
+   * Sign-out: drop everything the session's RLS grant was letting us see.
+   * Customers only exist in memory now, so this is what guarantees a signed-out
+   * browser shows nothing.
+   */
+  clearAllCustomers: () => {
+    for (const timer of remoteRefetchTimers.values()) clearTimeout(timer);
+    remoteRefetchTimers.clear();
+    set({ customers: [], hydration: {}, pendingRoute: null });
+    get().resetNavigation();
+  },
+
+  /**
+   * A customers row changed on the server (another tab or user). The payload
+   * is only a doorbell — everything real is re-fetched, debounced per customer
+   * so bursts of events collapse into one read.
+   */
+  handleRemoteCustomerEvent: (payload) => {
+    const type = payload?.eventType;
+    if (type === 'DELETE') {
+      const id = payload.old?.id;
+      if (id && get().customers.some((c) => c.id === id)) {
+        get().removeCustomer(id);
+      }
+      return;
+    }
+    const row = payload?.new;
+    if (!row?.id) return;
+    if (type === 'INSERT' || !get().customers.some((c) => c.id === row.id)) {
+      get().loadCustomersFromSupabase();
+      return;
+    }
+    const customer = get().customers.find((c) => c.id === row.id);
+    if (row.updated_at === customer.lastSetupSavedAt) return; // our own save echoing back
+    if (remoteRefetchTimers.has(row.id)) clearTimeout(remoteRefetchTimers.get(row.id));
+    remoteRefetchTimers.set(row.id, setTimeout(() => {
+      remoteRefetchTimers.delete(row.id);
+      get().applyRemoteCustomerUpdate(row);
+    }, REMOTE_REFETCH_DELAY_MS));
+  },
+
+  /** Debounced tail of handleRemoteCustomerEvent — pull the fresh state. */
+  applyRemoteCustomerUpdate: async (row) => {
+    const customer = get().customers.find((c) => c.id === row.id);
+    if (!customer) return;
+    if (row.updated_at === customer.lastSetupSavedAt) return;
+    // This tab has its own unsaved edits in flight for this customer — do not
+    // clobber them; the save's updated_at guard will surface the conflict.
+    if (pendingSetupSaveIds.has(row.id) || setupSaveInFlight) return;
+
+    if (customer.sites == null) {
+      // Pointer-only (never opened here): refresh what the list card shows —
+      // identity plus address/support. The full tree still loads on open.
+      try {
+        const card = await loadCustomerCard(row.id);
+        if (!card) return;
+        set({
+          customers: get().customers.map((c) => (c.id === row.id
+            ? {
+              ...c,
+              friendlyName: card.friendlyName || c.friendlyName,
+              code: card.code || c.code,
+              config: card.config,
+              lastSetupSavedAt: card.updatedAt,
+            }
+            : c)),
+        });
+      } catch {
+        // Background refresh failed — stay stale until the next event or reload.
+      }
+      return;
+    }
+
+    try {
+      const result = await loadCustomerFull(row.id);
+      if (!result) return;
+      applyingSetupSnapshot = true;
+      try {
+        set({
+          customers: normalizeCustomersTrafficFlow(get().customers.map((c) => (c.id === row.id
+            ? {
+              ...c,
+              friendlyName: result.customer.friendlyName || c.friendlyName,
+              code: result.customer.code || c.code,
+              config: result.customer.config,
+              sites: result.customer.sites,
+              displaySchedules: result.customer.displaySchedules,
+              lastSetupSavedAt: result.updatedAt,
+            }
+            : c))),
+        });
+      } finally {
+        applyingSetupSnapshot = false;
+      }
+      get().setHydration(row.id, 'hydrated');
+    } catch {
+      // Background refresh failed — stay stale until the next event or reload
+      // rather than surfacing an error the user never asked for.
     }
   },
 
   resetNavigation: () => {
     set({
       selectedCustomerId: null,
-      selectedGarageId: null,
+      selectedSiteId: null,
       selectedLevelId: null,
       selectedDevice: null,
       currentView: 'customers',
@@ -571,11 +600,11 @@ export const useAppStore = create((set, get) => ({
     }
   },
 
-  setGarages: (garagesOrFn) => {
+  setSites: (sitesOrFn) => {
     const { customers, selectedCustomerId } = get();
     if (!selectedCustomerId) return;
     set({
-      customers: updateCustomerGarages(customers, selectedCustomerId, garagesOrFn),
+      customers: updateCustomerSites(customers, selectedCustomerId, sitesOrFn),
     });
   },
 
@@ -586,35 +615,36 @@ export const useAppStore = create((set, get) => ({
   selectedCustomerId: null,
   setSelectedCustomerId: (id) => set({ selectedCustomerId: id }),
 
-  selectedGarageId: null,
-  setSelectedGarageId: (id) => set({ selectedGarageId: id }),
+  selectedSiteId: null,
+  setSelectedSiteId: (id) => set({ selectedSiteId: id }),
 
   selectedLevelId: null,
   setSelectedLevelId: (id) => {
-    const numericId = typeof id === 'string' ? parseInt(id, 10) : id;
-    set({ selectedLevelId: numericId });
-    const { selectedCustomerId, selectedGarageId } = get();
-    get().updateUrl(selectedCustomerId, selectedGarageId, numericId);
+    // Level ids are uuid strings — never coerce (parseInt would truncate a
+    // uuid that happens to start with digits into a bogus number).
+    set({ selectedLevelId: id });
+    const { selectedCustomerId, selectedSiteId } = get();
+    get().updateUrl(selectedCustomerId, selectedSiteId, id);
   },
 
   selectedDevice: null,
   setSelectedDevice: (device) => set({ selectedDevice: device }),
 
-  // Shared setup persistence (SetupJson tab on the customer's Google Sheet)
+  // Customer setup persistence (customer tree stored in the database)
   setupSync: { status: 'idle', error: null, savedAt: null, customerId: null },
 
   /**
    * Per-customer hydration state: 'loading' | 'hydrated' | 'absent' | 'failed'.
    *
-   * This is the gate that protects the sheet. Auto-save is allowed only from
-   * 'hydrated' (we read the shared layout) or 'absent' (we read successfully
+   * This is the gate that protects the database. Auto-save is allowed only from
+   * 'hydrated' (we read the customer's data) or 'absent' (we read successfully
    * and there is none yet). Writing from 'loading' or 'failed' would push
    * whatever happens to be in memory — historically an empty stub — over good
-   * data on the sheet.
+   * data in the database.
    */
   hydration: {},
 
-  /** Deep-link garage/level slugs awaiting a hydrate before they can resolve. */
+  /** Deep-link site/level slugs awaiting a hydrate before they can resolve. */
   pendingRoute: null,
 
   setHydration: (customerId, status) => set((state) => ({
@@ -629,49 +659,49 @@ export const useAppStore = create((set, get) => ({
     const { pendingRoute, customers } = get();
     if (!pendingRoute) return;
     const customer = customers.find((c) => c.id === pendingRoute.customerId);
-    if (!customer || customer.garages == null) return;
+    if (!customer || customer.sites == null) return;
 
     set({ pendingRoute: null });
-    const garages = customer.garages;
-    const garage = pendingRoute.garageSlug
-      ? garages.find((g) => toSlug(g.name) === pendingRoute.garageSlug)
+    const sites = customer.sites;
+    const site = pendingRoute.siteSlug
+      ? sites.find((s) => toSlug(s.name) === pendingRoute.siteSlug)
       : null;
-    if (!garage) {
-      set({ selectedGarageId: null, selectedLevelId: null, currentView: 'garages' });
+    if (!site) {
+      set({ selectedSiteId: null, selectedLevelId: null, currentView: 'sites' });
       get().updateUrl(customer.id, null, null, { replace: true });
       return;
     }
     const level = pendingRoute.levelSlug
-      ? (garage.levels ?? []).find((l) => toSlug(l.name) === pendingRoute.levelSlug)
+      ? (site.levels ?? []).find((l) => toSlug(l.name) === pendingRoute.levelSlug)
       : null;
     set({
-      selectedGarageId: garage.id,
+      selectedSiteId: site.id,
       selectedLevelId: level?.id ?? null,
       currentView: level ? 'editor' : 'levels',
     });
-    get().updateUrl(customer.id, garage.id, level?.id ?? null, { replace: true });
+    get().updateUrl(customer.id, site.id, level?.id ?? null, { replace: true });
   },
 
   /**
-   * Pull the SetupJson snapshot for a customer and hydrate the store with it.
-   * No-op when the customer has no linked config file or the tab is empty.
+   * Pull the customer's full tree from Supabase and hydrate the store with it.
+   * No-op once the customer's row id is known but the fetch hasn't happened yet
+   * for a brand-new (locally created) customer — callers create the row first.
    */
-  loadSetupFromSheet: async (customerId) => {
+  loadCustomerSetup: async (customerId) => {
     const customer = get().customers.find((c) => c.id === customerId);
     if (!customer || !customerHasConfigFile(customer)) return;
 
     get().setHydration(customerId, 'loading');
     set({ setupSync: { status: 'loading', error: null, savedAt: customer.lastSetupSavedAt ?? null, customerId } });
     try {
-      const snapshot = await loadCustomerSetupFromSheet(customer);
-      if (!snapshot) {
-        // The read succeeded and there is no shared layout yet. That is a
-        // legitimate starting state, so editing (and the first save) is allowed
-        // — but only because we know the sheet is empty, not because we failed.
+      const result = await loadCustomerFull(customerId);
+      if (!result) {
+        // The row exists locally but Supabase has nothing for it — treat as an
+        // empty starting layout rather than a failure.
         get().setHydration(customerId, 'absent');
         set((state) => ({
           customers: state.customers.map((c) => (
-            c.id === customerId && c.garages == null ? { ...c, garages: [] } : c
+            c.id === customerId && c.sites == null ? { ...c, sites: [] } : c
           )),
           setupSync: { status: 'idle', error: null, savedAt: customer.lastSetupSavedAt ?? null, customerId },
         }));
@@ -681,43 +711,17 @@ export const useAppStore = create((set, get) => ({
 
       applyingSetupSnapshot = true;
       try {
-        let nextGarages = snapshot.customer.garages;
-        try {
-          const networkingServers = await loadServersFromNetworkingTab(customer);
-          if (networkingServers.length) {
-            nextGarages = applyServersToGarages(nextGarages, networkingServers);
-          } else {
-            // Keep Servers tab data already loaded from Networking when SetupJson is empty.
-            nextGarages = mergeGaragesPreferNetworkingServers(nextGarages, customer.garages || []);
-          }
-        } catch {
-          nextGarages = mergeGaragesPreferNetworkingServers(nextGarages, customer.garages || []);
-        }
-
-        // The DisplaySchedules tab is authoritative. Nothing in the app edits
-        // schedules — they are only carried through SetupJson — so the copy in
-        // a snapshot goes stale the moment anyone edits the tab, and the app
-        // would then show schedules the sheet no longer has.
-        let nextSchedules = Array.isArray(snapshot.customer.displaySchedules)
-          ? snapshot.customer.displaySchedules
-          : null;
-        try {
-          const fromTab = await loadDisplaySchedulesFromTab(customer);
-          if (fromTab) nextSchedules = fromTab;
-        } catch {
-          // Fall back to the snapshot copy rather than dropping schedules.
-        }
-
         set({
           customers: normalizeCustomersTrafficFlow(get().customers.map((c) => (
             c.id === customerId
               ? {
                 ...c,
-                friendlyName: snapshot.customer.friendlyName || c.friendlyName,
-                config: snapshot.customer.config,
-                garages: nextGarages,
-                ...(nextSchedules ? { displaySchedules: nextSchedules } : {}),
-                lastSetupSavedAt: snapshot.savedAt,
+                friendlyName: result.customer.friendlyName || c.friendlyName,
+                code: result.customer.code || c.code,
+                config: result.customer.config,
+                sites: result.customer.sites,
+                displaySchedules: result.customer.displaySchedules,
+                lastSetupSavedAt: result.updatedAt,
               }
               : c
           ))),
@@ -726,22 +730,19 @@ export const useAppStore = create((set, get) => ({
         applyingSetupSnapshot = false;
       }
       get().setHydration(customerId, 'hydrated');
-      set({ setupSync: { status: 'loaded', error: null, savedAt: snapshot.savedAt, customerId } });
+      set({ setupSync: { status: 'loaded', error: null, savedAt: result.updatedAt, customerId } });
       get().applyPendingRoute();
     } catch (err) {
-      // Leave `garages` as-is (null when never loaded). Do NOT fabricate an
+      // Leave `sites` as-is (null when never loaded). Do NOT fabricate an
       // empty layout — auto-save is gated on this state precisely so a failed
-      // read can never be written back over the sheet.
+      // read can never be written back over Supabase.
       get().setHydration(customerId, 'failed');
       set({
         setupSync: {
           status: 'error',
           action: 'load',
           error: friendlySetupSyncError(err, 'load'),
-          // Content that cannot be parsed will never parse. Retrying forever
-          // would leave this customer stuck, since editing is blocked until the
-          // layout loads — offer a rebuild instead.
-          recoverable: isSetupContentError(err?.message),
+          recoverable: false,
           savedAt: customer.lastSetupSavedAt ?? null,
           customerId,
         },
@@ -750,76 +751,24 @@ export const useAppStore = create((set, get) => ({
   },
 
   /**
-   * Rebuild an unreadable shared layout from the customer's config tabs.
-   *
-   * Only for a SetupJson tab whose content is damaged — typically written by a
-   * build that could leave a partial payload behind. The config tabs still hold
-   * sites, levels and devices, so the layout is recoverable; what is lost is
-   * editor-only detail the tabs never carried (floor-plan images, device
-   * positions, zones). That is stated plainly in the UI before it runs.
+   * Write the full customer tree to Supabase so other users opening the
+   * customer see the same state.
+   * @param {string} customerId
+   * @param {{ force?: boolean }} [options] - force skips the remote conflict check
    */
-  rebuildSetupFromConfigTabs: async (customerId) => {
+  saveCustomerSetup: async (customerId, { force = false } = {}) => {
     const customer = get().customers.find((c) => c.id === customerId);
     if (!customer || !customerHasConfigFile(customer)) return;
-
-    set({ setupSync: { status: 'loading', error: null, savedAt: null, customerId } });
-    try {
-      const fileId = customer.sourceFileId || customer.spreadsheetId;
-      const buffer = await downloadConfigFile(fileId);
-      const parsed = parseExcelFile(buffer);
-
-      applyingSetupSnapshot = true;
-      try {
-        set({
-          customers: normalizeCustomersTrafficFlow(get().customers.map((c) => (
-            c.id === customerId
-              ? { ...c, garages: parsed.garages || [], lastSetupSavedAt: null }
-              : c
-          ))),
-        });
-      } finally {
-        applyingSetupSnapshot = false;
-      }
-
-      // 'absent' rather than 'hydrated': there is no valid shared layout, and
-      // saying so is what permits the save that replaces the damaged one.
-      get().setHydration(customerId, 'absent');
-      await get().saveCustomerSetupToSheet(customerId, { force: true });
-    } catch (err) {
-      get().setHydration(customerId, 'failed');
-      set({
-        setupSync: {
-          status: 'error',
-          action: 'load',
-          error: friendlySetupSyncError(err, 'rebuild'),
-          recoverable: false,
-          savedAt: null,
-          customerId,
-        },
-      });
-    }
-  },
-
-  /**
-   * Write the full customer snapshot to the SetupJson tab so other users
-   * opening the customer see the same state.
-   * @param {number|string} customerId
-   * @param {{ force?: boolean }} [options] - force skips remote conflict check
-   */
-  saveCustomerSetupToSheet: async (customerId, { force = false } = {}) => {
-    const customer = get().customers.find((c) => c.id === customerId);
-    if (!customer || !customerHasConfigFile(customer)) return;
-    if (setupSheetUnavailableIds.has(customerId)) return;
 
     // Never write layout we did not read. This is the last line of defence for
     // the case that used to wipe customers: a failed load leaves memory empty,
-    // one edit fires auto-save, and the empty state lands on the sheet.
+    // one edit fires auto-save, and the empty state lands on Supabase.
     if (customerNeedsHydration(customer, get().hydration)) {
       set({
         setupSync: {
           status: 'error',
           action: 'load',
-          error: 'The shared layout has not loaded yet — reload it before saving.',
+          error: 'The layout has not loaded yet — reload it before saving.',
           savedAt: customer.lastSetupSavedAt ?? null,
           customerId,
         },
@@ -829,88 +778,41 @@ export const useAppStore = create((set, get) => ({
 
     set({ setupSync: { status: 'saving', error: null, savedAt: customer.lastSetupSavedAt ?? null, customerId } });
     try {
-      // Backgrounds / device photos from older builds (or oversized re-imports)
-      // can be several MB each; shrink them here so one big photo can't wedge
-      // every later save for the customer.
+      // Backgrounds / device photos carried over from a JSON import can still be
+      // oversized inline data URLs; shrink them here so one big photo can't wedge
+      // the save. Normal Storage-uploaded images are already small paths, so this
+      // is a no-op in the common case.
       const customerToSave = await shrinkOversizedSetupMedia(customerId, customer);
 
-      const payload = serializeCustomerLayout(customerToSave);
-      const contentHash = setupContentHash(payload);
+      const expectedUpdatedAt = force ? null : customer.lastSetupSavedAt;
+      const result = await saveCustomerFull(customerId, customerToSave, { expectedUpdatedAt });
 
-      // Two cells, not the whole snapshot. The old check reloaded the entire
-      // SetupJson before every save, so a customer with twenty floor plans
-      // pulled ~10 MB down and pushed ~10 MB up every four seconds of editing.
-      const remote = await readSetupJsonRevision(customerToSave);
-
-      if (remote.hash && remote.hash === contentHash) {
-        // The layout is identical, so the snapshot does not need rewriting —
-        // but the config tabs can still be behind it (they are what drifts).
-        // Refresh them anyway: it costs one batched read when nothing differs.
-        await refreshConfigTabs(customerToSave);
-
-        // Adopt the remote timestamp so a later save is compared against what
-        // is really there.
-        const savedAt = remote.savedAt ?? customer.lastSetupSavedAt ?? null;
-        applyingSetupSnapshot = true;
-        try {
-          set({
-            customers: get().customers.map((c) => (
-              c.id === customerId ? { ...c, lastSetupSavedAt: savedAt } : c
-            )),
-          });
-        } finally {
-          applyingSetupSnapshot = false;
-        }
-        set({ setupSync: { status: 'saved', error: null, savedAt, customerId } });
-        return;
-      }
-
-      // Checked on every save, not just when a local timestamp happens to
-      // exist. The old `&& customer.lastSetupSavedAt` gate meant the very paths
-      // that lost the timestamp (failed load, tab fallback) also skipped the
-      // conflict check and overwrote unconditionally.
-      if (
-        !force
-        && remote.savedAt
-        && remote.savedAt !== customer.lastSetupSavedAt
-        && (!customer.lastSetupSavedAt
-          || new Date(remote.savedAt) > new Date(customer.lastSetupSavedAt))
-      ) {
+      if (result.status === 'conflict') {
         set({
           setupSync: {
             status: 'conflict',
             action: 'conflict',
             error: 'Someone else saved a newer shared setup. Reload their version or overwrite with yours.',
             savedAt: customer.lastSetupSavedAt,
-            remoteSavedAt: remote.savedAt,
+            remoteSavedAt: result.remoteUpdatedAt,
             customerId,
           },
         });
         return;
       }
 
-      await writeSetupJsonToSpreadsheet(customerToSave, payload);
-
-      await refreshConfigTabs(customerToSave);
-
       applyingSetupSnapshot = true;
       try {
         set({
           customers: get().customers.map((c) => (
-            c.id === customerId ? { ...c, lastSetupSavedAt: payload.savedAt } : c
+            c.id === customerId ? { ...c, lastSetupSavedAt: result.updatedAt } : c
           )),
         });
       } finally {
         applyingSetupSnapshot = false;
       }
-      set({ setupSync: { status: 'saved', error: null, savedAt: payload.savedAt, customerId } });
+      set({ setupSync: { status: 'saved', error: null, savedAt: result.updatedAt, customerId } });
     } catch (err) {
-      if (/no google sheet found/i.test(err?.message || '')) {
-        // Excel-only Drive link — sheet writes aren't possible; don't keep retrying.
-        setupSheetUnavailableIds.add(customerId);
-        set({ setupSync: { status: 'unavailable', error: null, savedAt: customer.lastSetupSavedAt ?? null, customerId } });
-        return;
-      }
       set({
         setupSync: {
           status: 'error',
@@ -928,24 +830,24 @@ export const useAppStore = create((set, get) => ({
     const { selectedCustomerId, setupSync } = get();
     if (!selectedCustomerId) return;
     if (setupSync.action === 'load') {
-      get().loadSetupFromSheet(selectedCustomerId);
+      get().loadCustomerSetup(selectedCustomerId);
     } else if (setupSync.action === 'conflict') {
-      get().saveCustomerSetupToSheet(selectedCustomerId, { force: true });
+      get().saveCustomerSetup(selectedCustomerId, { force: true });
     } else {
-      get().saveCustomerSetupToSheet(selectedCustomerId);
+      get().saveCustomerSetup(selectedCustomerId);
     }
   },
 
   resolveSetupConflictReload: () => {
     const { selectedCustomerId } = get();
     if (!selectedCustomerId) return;
-    get().loadSetupFromSheet(selectedCustomerId);
+    get().loadCustomerSetup(selectedCustomerId);
   },
 
   resolveSetupConflictOverwrite: () => {
     const { selectedCustomerId } = get();
     if (!selectedCustomerId) return;
-    get().saveCustomerSetupToSheet(selectedCustomerId, { force: true });
+    get().saveCustomerSetup(selectedCustomerId, { force: true });
   },
 
   // Actions
@@ -954,25 +856,25 @@ export const useAppStore = create((set, get) => ({
     if (!customer) return;
     set({
       selectedCustomerId: customer.id,
-      selectedGarageId: null,
+      selectedSiteId: null,
       selectedLevelId: null,
-      currentView: 'garages',
+      currentView: 'sites',
       pendingRoute: null,
     });
     get().updateUrl(customer.id, null, null);
-    get().loadSetupFromSheet(customer.id);
+    get().loadCustomerSetup(customer.id);
   },
 
-  selectGarage: (garageId) => {
-    set({ selectedGarageId: garageId, selectedLevelId: null, currentView: 'levels', pendingRoute: null });
+  selectSite: (siteId) => {
+    set({ selectedSiteId: siteId, selectedLevelId: null, currentView: 'levels', pendingRoute: null });
     const { selectedCustomerId } = get();
-    get().updateUrl(selectedCustomerId, garageId, null);
+    get().updateUrl(selectedCustomerId, siteId, null);
   },
 
   selectLevel: (levelId) => {
     set({ selectedLevelId: levelId, currentView: 'editor' });
-    const { selectedCustomerId, selectedGarageId } = get();
-    get().updateUrl(selectedCustomerId, selectedGarageId, levelId);
+    const { selectedCustomerId, selectedSiteId } = get();
+    get().updateUrl(selectedCustomerId, selectedSiteId, levelId);
   },
 
   /**
@@ -990,7 +892,7 @@ export const useAppStore = create((set, get) => ({
     if (currentView === 'customers') return;
     set({
       selectedCustomerId: null,
-      selectedGarageId: null,
+      selectedSiteId: null,
       selectedLevelId: null,
       selectedDevice: null,
       currentView: 'customers',
@@ -1000,23 +902,23 @@ export const useAppStore = create((set, get) => ({
   },
 
   setLevels: (newLevels) => {
-    const { customers, selectedCustomerId, selectedGarageId } = get();
-    if (!selectedCustomerId || !selectedGarageId) return;
+    const { customers, selectedCustomerId, selectedSiteId } = get();
+    if (!selectedCustomerId || !selectedSiteId) return;
     set({
       customers: customers.map((c) => {
         if (c.id !== selectedCustomerId) return c;
         return {
           ...c,
-          garages: (c.garages ?? []).map((g) =>
-            g.id === selectedGarageId ? { ...g, levels: newLevels } : g
+          sites: (c.sites ?? []).map((s) =>
+            s.id === selectedSiteId ? { ...s, levels: newLevels } : s
           ),
         };
       }),
     });
   },
 
-  // URL management: /{customer-id}/{garage-slug}/{level-slug}
-  updateUrl: (customerId, garageId, levelId, { replace = false } = {}) => {
+  // URL management: /{customer-id}/{site-slug}/{level-slug}
+  updateUrl: (customerId, siteId, levelId, { replace = false } = {}) => {
     const write = replace ? 'replaceState' : 'pushState';
     const { customers } = get();
     const customer = customers.find((c) => c.id === customerId);
@@ -1024,18 +926,18 @@ export const useAppStore = create((set, get) => ({
       window.history[write]({}, '', '/');
       return;
     }
-    const garages = customer.garages ?? [];
-    const garage = garages.find((g) => g.id === garageId);
-    if (!garage) {
+    const sites = customer.sites ?? [];
+    const site = sites.find((s) => s.id === siteId);
+    if (!site) {
       window.history[write]({}, '', `/${customer.customerId}`);
       return;
     }
-    const levels = garage.levels ?? [];
+    const levels = site.levels ?? [];
     const level = levels.find((l) => l.id === levelId);
     if (level) {
-      window.history[write]({}, '', `/${customer.customerId}/${toSlug(garage.name)}/${toSlug(level.name)}`);
+      window.history[write]({}, '', `/${customer.customerId}/${toSlug(site.name)}/${toSlug(level.name)}`);
     } else {
-      window.history[write]({}, '', `/${customer.customerId}/${toSlug(garage.name)}`);
+      window.history[write]({}, '', `/${customer.customerId}/${toSlug(site.name)}`);
     }
   },
 
@@ -1056,36 +958,17 @@ export const useAppStore = create((set, get) => ({
   },
 }));
 
-// Load shared SetupJson when a customer is in the route (deep link / refresh / popstate).
-// loadSetupFromSheet skips hydrate when remote savedAt matches local.
+// Load the customer's setup from the database when a customer is in the route
+// (deep link / refresh / popstate). loadCustomerSetup skips hydrate when the
+// remote savedAt matches local.
 function maybeLoadSetupForRoute(get) {
   const { selectedCustomerId } = get();
   if (!selectedCustomerId) return;
-  get().loadSetupFromSheet(selectedCustomerId);
+  get().loadCustomerSetup(selectedCustomerId);
 }
 
-// Auto-save to localStorage whenever customers or mode change (if enabled).
-// Remembers opened customers only — sheet layout still lives in SetupJson.
-useAppStore.subscribe((state, prev) => {
-  if (!state.localSaveEnabled) return;
-  if (state.customers !== prev.customers || state.mode !== prev.mode) {
-    const saved = saveLocalState(state);
-    if (saved) {
-      if (state.localSaveError) {
-        useAppStore.setState({ localSaveError: null });
-      }
-      return;
-    }
-    if (!state.localSaveError) {
-      useAppStore.setState({
-        localSaveError: 'Local save failed — browser storage may be full.',
-      });
-    }
-  }
-});
-
-// Auto-save the selected customer's full setup to the SetupJson sheet tab
-// (debounced) whenever their data changes, so other users see the same state.
+// Auto-save the selected customer's full setup to the database (debounced)
+// whenever their data changes, so other users see the same state.
 useAppStore.subscribe((state, prev) => {
   if (applyingSetupSnapshot) return;
   if (state.customers === prev.customers) return;
@@ -1095,8 +978,8 @@ useAppStore.subscribe((state, prev) => {
   const prevCustomer = prev.customers.find((c) => c.id === id);
   if (!customer || customer === prevCustomer) return;
   if (!customerHasConfigFile(customer)) return;
-  // The gate. Until the shared layout has actually been read, there is nothing
-  // safe to write — in-memory state is either empty or derived from a fallback.
+  // The gate. Until the layout has actually been read from the database, there is
+  // nothing safe to write — in-memory state is either empty or derived from a fallback.
   if (customerNeedsHydration(customer, state.hydration)) return;
   pendingSetupSaveIds.add(id);
   scheduleSetupAutoSave();
@@ -1111,7 +994,7 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 // Stable fallbacks — selectors must not return new [] on every snapshot
-const EMPTY_GARAGES = [];
+const EMPTY_SITES = [];
 const EMPTY_LEVELS = [];
 
 // Selectors
@@ -1127,38 +1010,30 @@ export const useCurrentCustomer = () => useAppStore((state) =>
 export const useCustomerDataStatus = () => useAppStore((state) => {
   const customer = state.customers.find((c) => c.id === state.selectedCustomerId);
   if (!customer) return 'ready';
-  // Linked to an .xlsx but no Google Sheet: every write silently goes nowhere,
-  // so the app would show devices the linked file has never contained. A local
-  // customer with no linked file at all is left alone — there is no second
-  // copy for it to disagree with.
-  if (customerHasConfigFile(customer) && !customerCanSyncToSheet(customer)) return 'nosheet';
   if (!customerNeedsHydration(customer, state.hydration)) return 'ready';
   return state.hydration[customer.id] === 'failed' ? 'failed' : 'loading';
 });
 
-export const useCustomerGarages = () => useAppStore((state) => {
+export const useCustomerSites = () => useAppStore((state) => {
   const customer = state.customers.find((c) => c.id === state.selectedCustomerId);
-  return customer?.garages ?? EMPTY_GARAGES;
+  return customer?.sites ?? EMPTY_SITES;
 });
 
-/** Alias for components that previously used store.garages */
-export const useGarages = useCustomerGarages;
-
-export const useCurrentGarage = () => useAppStore((state) => {
+export const useCurrentSite = () => useAppStore((state) => {
   const customer = state.customers.find((c) => c.id === state.selectedCustomerId);
-  if (!customer?.garages) return null;
-  return customer.garages.find((g) => g.id === state.selectedGarageId) ?? null;
+  if (!customer?.sites) return null;
+  return customer.sites.find((s) => s.id === state.selectedSiteId) ?? null;
 });
 
 export const useLevels = () => useAppStore((state) => {
   const customer = state.customers.find((c) => c.id === state.selectedCustomerId);
-  const garage = customer?.garages?.find((g) => g.id === state.selectedGarageId);
-  return garage?.levels ?? EMPTY_LEVELS;
+  const site = customer?.sites?.find((s) => s.id === state.selectedSiteId);
+  return site?.levels ?? EMPTY_LEVELS;
 });
 
 export const useCurrentLevel = () => useAppStore((state) => {
   const customer = state.customers.find((c) => c.id === state.selectedCustomerId);
-  const garage = customer?.garages?.find((g) => g.id === state.selectedGarageId);
-  if (!garage?.levels) return null;
-  return garage.levels.find((l) => l.id === state.selectedLevelId) ?? null;
+  const site = customer?.sites?.find((s) => s.id === state.selectedSiteId);
+  if (!site?.levels) return null;
+  return site.levels.find((l) => l.id === state.selectedLevelId) ?? null;
 });

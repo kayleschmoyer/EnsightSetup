@@ -292,12 +292,12 @@ export function normalizeCustomersTrafficFlow(customers) {
   if (!Array.isArray(customers)) return customers;
   return customers.map((customer) => ({
     ...customer,
-    // `null` garages means "not read from the sheet yet" and must survive
+    // `null` sites means "not read from the sheet yet" and must survive
     // normalization — collapsing it to [] would claim the customer has no
     // sites, which is exactly the lie this whole change removes.
-    garages: customer.garages == null ? customer.garages : customer.garages.map((garage) => ({
-      ...garage,
-      levels: (garage.levels ?? []).map((level) => ({
+    sites: customer.sites == null ? customer.sites : customer.sites.map((site) => ({
+      ...site,
+      levels: (site.levels ?? []).map((level) => ({
         ...level,
         devices: (level.devices ?? []).map(normalizeDeviceTrafficFlow),
       })),

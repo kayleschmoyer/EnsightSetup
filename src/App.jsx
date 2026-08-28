@@ -1,14 +1,17 @@
 import React, { useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useAppStore, useCustomerGarages, useLevels } from './stores/useAppStore';
+import { useAppStore, useCustomerSites, useLevels } from './stores/useAppStore';
 import CustomerDataGate from './components/CustomerDataGate';
 import { TooltipProvider } from './components/ui/tooltip';
 import CustomerSelector from './components/CustomerSelector';
-import GarageSelector from './components/GarageSelector';
+import SiteSelector from './components/SiteSelector';
 import LevelSelector from './components/LevelSelector';
 import EditorView from './components/EditorView';
 import GoogleSessionPrompt from './components/GoogleSessionPrompt';
+import WriteConfirmationDialog from './components/WriteConfirmationDialog';
+import { getSession, onAuthStateChange } from './services/GoogleAuthService';
+import { subscribeToCustomersTable } from './services/CustomerRepository';
 import './App.css';
 
 const MotionDiv = motion.div;
@@ -27,7 +30,7 @@ const queryClient = new QueryClient({
 
 const viewComponents = {
   customers: CustomerSelector,
-  garages: GarageSelector,
+  sites: SiteSelector,
   levels: LevelSelector,
   editor: EditorView,
 };
@@ -37,28 +40,60 @@ function AppContent() {
   const mode = useAppStore(s => s.mode);
   const customers = useAppStore(s => s.customers);
   const selectedCustomerId = useAppStore(s => s.selectedCustomerId);
-  const selectedGarageId = useAppStore(s => s.selectedGarageId);
+  const selectedSiteId = useAppStore(s => s.selectedSiteId);
   const selectedLevelId = useAppStore(s => s.selectedLevelId);
   const selectedDevice = useAppStore(s => s.selectedDevice);
-  const setGarages = useAppStore(s => s.setGarages);
+  const setSites = useAppStore(s => s.setSites);
   const setSelectedCustomerId = useAppStore(s => s.setSelectedCustomerId);
   const selectCustomer = useAppStore(s => s.selectCustomer);
-  const setSelectedGarageId = useAppStore(s => s.setSelectedGarageId);
-  const selectGarage = useAppStore(s => s.selectGarage);
+  const setSelectedSiteId = useAppStore(s => s.setSelectedSiteId);
+  const selectSite = useAppStore(s => s.selectSite);
   const setLevels = useAppStore(s => s.setLevels);
   const setSelectedLevelId = useAppStore(s => s.setSelectedLevelId);
   const selectLevel = useAppStore(s => s.selectLevel);
   const setSelectedDevice = useAppStore(s => s.setSelectedDevice);
   const setCurrentView = useAppStore(s => s.setCurrentView);
   const goBack = useAppStore(s => s.goBack);
-  const setMode = useAppStore(s => s.setMode);
-  const garages = useCustomerGarages();
+  const sites = useCustomerSites();
   const levels = useLevels();
 
+  // Dark mode only now — light mode was removed, so this just applies the
+  // class once rather than reacting to a value that can no longer change.
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', mode === 'dark');
-    document.documentElement.classList.toggle('light', mode !== 'dark');
-  }, [mode]);
+    document.documentElement.classList.add('dark');
+    document.documentElement.classList.remove('light');
+  }, []);
+
+  // The app session (Google OAuth, ensight-technologies.com only — see
+  // GoogleAuthService.js) drives everything: once signed in, pull the
+  // customer list; on sign-out, drop it — customers exist only in memory, so
+  // a signed-out browser shows nothing. Runs once at mount (in case a session
+  // already exists from a previous visit) and again on every sign-in/sign-out.
+  useEffect(() => {
+    const store = useAppStore.getState();
+    const syncSession = (session) => {
+      const hadSession = Boolean(useAppStore.getState().session);
+      store.setSession(session);
+      if (session) {
+        store.loadCustomersFromSupabase();
+      } else if (hadSession) {
+        store.clearAllCustomers();
+      }
+    };
+    getSession().then(syncSession);
+    return onAuthStateChange(syncSession);
+  }, []);
+
+  // Live updates: while signed in, listen for customers-row changes (any tab,
+  // any user) and let the store re-fetch what changed. Boolean dep so token
+  // refreshes don't churn the websocket subscription.
+  const signedIn = useAppStore((s) => Boolean(s.session));
+  useEffect(() => {
+    if (!signedIn) return undefined;
+    return subscribeToCustomersTable((payload) => {
+      useAppStore.getState().handleRemoteCustomerEvent(payload);
+    });
+  }, [signedIn]);
 
   useEffect(() => {
     useAppStore.getState().parseUrlAndRestore();
@@ -119,28 +154,28 @@ function AppContent() {
 
   useEffect(() => {
     const store = useAppStore.getState();
-    if (['garages', 'levels', 'editor'].includes(currentView) && !selectedCustomerId) {
+    if (['sites', 'levels', 'editor'].includes(currentView) && !selectedCustomerId) {
       store.resetNavigation();
       return;
     }
-    // A deep link parks on 'garages' with the garage/level slugs still pending
+    // A deep link parks on 'sites' with the site/level slugs still pending
     // until the sheet answers. Correcting navigation now would discard them.
     if (store.pendingRoute) return;
-    if (currentView === 'editor' && (!selectedGarageId || !selectedLevelId)) {
-      if (selectedGarageId) {
+    if (currentView === 'editor' && (!selectedSiteId || !selectedLevelId)) {
+      if (selectedSiteId) {
         store.setCurrentView('levels');
-        store.updateUrl(selectedCustomerId, selectedGarageId, null, { replace: true });
+        store.updateUrl(selectedCustomerId, selectedSiteId, null, { replace: true });
       } else {
-        store.setCurrentView('garages');
+        store.setCurrentView('sites');
         store.updateUrl(selectedCustomerId, null, null, { replace: true });
       }
       return;
     }
-    if (currentView === 'levels' && !selectedGarageId) {
-      store.setCurrentView('garages');
+    if (currentView === 'levels' && !selectedSiteId) {
+      store.setCurrentView('sites');
       store.updateUrl(selectedCustomerId, null, null, { replace: true });
     }
-  }, [currentView, selectedCustomerId, selectedGarageId, selectedLevelId]);
+  }, [currentView, selectedCustomerId, selectedSiteId, selectedLevelId]);
 
   const CurrentView = viewComponents[currentView] || CustomerSelector;
 
@@ -151,14 +186,14 @@ function AppContent() {
   const contextValue = {
     customers,
     currentCustomer,
-    garages,
-    setGarages,
+    sites,
+    setSites,
     selectedCustomerId,
     setSelectedCustomerId,
     selectCustomer,
-    selectedGarageId,
-    setSelectedGarageId,
-    selectGarage,
+    selectedSiteId,
+    setSelectedSiteId,
+    selectSite,
     levels,
     setLevels,
     selectedLevelId,
@@ -171,13 +206,13 @@ function AppContent() {
     setCurrentView,
     goBack,
     mode,
-    setMode,
   };
 
   return (
     <AppContext.Provider value={contextValue}>
       <div className="min-h-screen bg-background text-foreground">
         <GoogleSessionPrompt />
+        <WriteConfirmationDialog />
         <AnimatePresence mode="wait">
           <MotionDiv
             key={currentView}

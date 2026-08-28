@@ -3,19 +3,19 @@ import { Label } from './ui/label';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select';
 
 /**
- * Garage + level assignment for the DisplayLevels config sheet tab.
+ * Site + level assignment for the DisplayLevels config sheet tab.
  */
 export default function DisplayLevelSelect({
-  garages = [],
-  garageId,
+  sites = [],
+  siteId,
   levelAll = false,
   levelIds = [],
-  onGarageChange,
+  onSiteChange,
   onLevelAllChange,
   onLevelIdsChange,
 }) {
-  const garage = garages.find((g) => g.id === garageId);
-  const levels = garage?.levels || [];
+  const site = sites.find((s) => s.id === siteId);
+  const levels = site?.levels || [];
 
   const toggleLevel = useCallback((id) => {
     if (levelAll) return;
@@ -36,33 +36,33 @@ export default function DisplayLevelSelect({
   return (
     <div className="space-y-3">
       <div>
-        <Label>Garage</Label>
+        <Label>Site</Label>
         <p className="text-[10px] text-muted-foreground mt-0.5">
           Site for this display on the DisplayLevels tab.
         </p>
         <Select
-          value={garageId != null ? String(garageId) : 'none'}
-          onValueChange={(v) => onGarageChange(v === 'none' ? null : Number(v))}
+          value={siteId != null ? String(siteId) : 'none'}
+          onValueChange={(v) => onSiteChange(v === 'none' ? null : v)}
         >
           <SelectTrigger className="mt-1.5">
-            <SelectValue placeholder="Select garage..." />
+            <SelectValue placeholder="Select site..." />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="none">Select garage...</SelectItem>
-            {garages.map((g) => (
-              <SelectItem key={g.id} value={String(g.id)}>
-                {g.name || g.internalName}
+            <SelectItem value="none">Select site...</SelectItem>
+            {sites.map((s) => (
+              <SelectItem key={s.id} value={String(s.id)}>
+                {s.name || s.internalName}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
 
-      {garageId != null && (
+      {siteId != null && (
         <div>
           <Label>Levels</Label>
           <p className="text-[10px] text-muted-foreground mt-0.5">
-            Select one or more levels, or choose All for every level in this garage.
+            Select one or more levels, or choose All for every level in this site.
           </p>
           <div className="mt-1.5 space-y-1">
             <button
@@ -88,7 +88,7 @@ export default function DisplayLevelSelect({
               );
             })}
             {!levelAll && levels.length === 0 && (
-              <p className="text-[10px] text-muted-foreground px-1">No levels in this garage.</p>
+              <p className="text-[10px] text-muted-foreground px-1">No levels in this site.</p>
             )}
           </div>
         </div>

@@ -1,5 +1,5 @@
 /** Config Google Sheet tab order (left to right) — matches Ensight xlsx template. */
-import { zoneSheetLevelName } from './zoneLevelUtils';
+import { zoneSheetLevelName } from './zoneLevelUtils.js';
 
 export const CONFIG_SHEET_TABS = Object.freeze([
   'Customer',
@@ -154,16 +154,16 @@ export function defaultLevelSheetConfig(ordinal = 1) {
   };
 }
 
-export function buildGarageSheetRow(garage, stage = '') {
-  const garageName = garage.internalName || garage.name || '';
-  const visibleName = garage.name || garageName;
-  return [garageName, visibleName, stage || garage.stage || ''];
+export function buildGarageSheetRow(site, stage = '') {
+  const siteName = site.internalName || site.name || '';
+  const visibleName = site.name || siteName;
+  return [siteName, visibleName, stage || site.stage || ''];
 }
 
-export function buildGarageLevelSheetRow(garage, level, ordinal) {
+export function buildGarageLevelSheetRow(site, level, ordinal) {
   const config = { ...defaultLevelSheetConfig(ordinal), ...(level.config || {}) };
-  const garageName = garage.internalName || garage.name || '';
-  const levels = garage?.levels || [];
+  const siteName = site.internalName || site.name || '';
+  const levels = site?.levels || [];
   // Zones: app name is short ("Zone 1"); sheet Level / VisibleLevelName are
   // "{Parent} {Name}" (e.g. "Level 1 Zone 1").
   const sheetLevelName = zoneSheetLevelName(level, levels)
@@ -178,7 +178,7 @@ export function buildGarageLevelSheetRow(garage, level, ordinal) {
     ? 'FLI'
     : rawType;
   return [
-    garageName,
+    siteName,
     levelInternal,
     visibleLevelName,
     config.server || '',
@@ -202,7 +202,7 @@ export function buildGarageLevelSheetRow(garage, level, ordinal) {
 
 /**
  * Build a Networking tab row from a LevelSelector-style server object.
- * Best-effort: many Networking columns have no garage.servers equivalent.
+ * Best-effort: many Networking columns have no site.servers equivalent.
  */
 export function buildNetworkingSheetRow(server) {
   const port0 = Array.isArray(server?.ports) ? server.ports[0] : null;
@@ -233,62 +233,62 @@ export function buildNetworkingSheetRow(server) {
 }
 
 /**
- * Apply shared Networking/servers list onto every garage.
+ * Apply shared Networking/servers list onto every site.
  * Networking is customer-wide (no Garage column).
  */
-export function applyServersToGarages(garages = [], servers = []) {
-  if (!Array.isArray(garages) || !garages.length) return garages;
-  if (!Array.isArray(servers) || !servers.length) return garages;
-  return garages.map((g) => ({
-    ...g,
-    servers: servers.map((s) => ({ ...s, ports: (s.ports || []).map((p) => ({ ...p })) })),
+export function applyServersToSites(sites = [], servers = []) {
+  if (!Array.isArray(sites) || !sites.length) return sites;
+  if (!Array.isArray(servers) || !servers.length) return sites;
+  return sites.map((s) => ({
+    ...s,
+    servers: servers.map((sv) => ({ ...sv, ports: (sv.ports || []).map((p) => ({ ...p })) })),
   }));
 }
 
 /**
  * Prefer tab/Networking servers when present; otherwise keep SetupJson/local servers.
  */
-export function mergeGaragesPreferNetworkingServers(setupGarages = [], tabGarages = []) {
-  const fromTabs = (tabGarages || []).find((g) => Array.isArray(g?.servers) && g.servers.length)?.servers
+export function mergeSitesPreferNetworkingServers(setupSites = [], tabSites = []) {
+  const fromTabs = (tabSites || []).find((s) => Array.isArray(s?.servers) && s.servers.length)?.servers
     || [];
   if (fromTabs.length) {
-    return applyServersToGarages(setupGarages, fromTabs);
+    return applyServersToSites(setupSites, fromTabs);
   }
-  return setupGarages;
+  return setupSites;
 }
 
 /**
  * Drop sensor groups that no device still references.
  */
-export function pruneUnusedSensorGroups(garage) {
-  if (!garage) return garage;
+export function pruneUnusedSensorGroups(site) {
+  if (!site) return site;
   const used = new Set();
-  for (const level of garage.levels || []) {
+  for (const level of site.levels || []) {
     for (const device of level.devices || []) {
       if (device?.configSensorGroupId != null) used.add(device.configSensorGroupId);
     }
   }
-  const nextGroups = (garage.sensorGroups || []).filter((g) => used.has(g.id));
-  if (nextGroups.length === (garage.sensorGroups || []).length) return garage;
-  return { ...garage, sensorGroups: nextGroups };
+  const nextGroups = (site.sensorGroups || []).filter((g) => used.has(g.id));
+  if (nextGroups.length === (site.sensorGroups || []).length) return site;
+  return { ...site, sensorGroups: nextGroups };
 }
 
 /**
  * Drop display groups that no sign still references.
  */
-export function pruneUnusedDisplayGroups(garage) {
-  if (!garage) return garage;
+export function pruneUnusedDisplayGroups(site) {
+  if (!site) return site;
   const used = new Set();
-  for (const level of garage.levels || []) {
+  for (const level of site.levels || []) {
     for (const device of level.devices || []) {
       if (device?.type?.startsWith('sign-') && device.displayGroupId != null) {
         used.add(device.displayGroupId);
       }
     }
   }
-  const nextGroups = (garage.displayGroups || []).filter((g) => used.has(g.id));
-  if (nextGroups.length === (garage.displayGroups || []).length) return garage;
-  return { ...garage, displayGroups: nextGroups };
+  const nextGroups = (site.displayGroups || []).filter((g) => used.has(g.id));
+  if (nextGroups.length === (site.displayGroups || []).length) return site;
+  return { ...site, displayGroups: nextGroups };
 }
 
 /** Default top-level customer card fields (address, maps, support). */
@@ -367,18 +367,18 @@ export function sensorProtocolFromDeviceType(type) {
 }
 
 /**
- * Ensure a map sensor device has a garage sensor group (configSensorGroupId).
+ * Ensure a map sensor device has a site sensor group (configSensorGroupId).
  * Finds an existing group with the same protocol or creates one named after the protocol.
- * Also patches the device into garage.levels so SensorGroups sheet rebuild sees it.
+ * Also patches the device into site.levels so SensorGroups sheet rebuild sees it.
  *
- * @returns {{ device: object, garage: object }}
+ * @returns {{ device: object, site: object }}
  */
-export function ensureDeviceSensorGroup(garage, level, device) {
+export function ensureDeviceSensorGroup(site, level, device) {
   if (!device?.type?.startsWith('sensor-')) {
-    return { device, garage };
+    return { device, site };
   }
 
-  let sensorGroups = [...(garage?.sensorGroups || [])];
+  let sensorGroups = [...(site?.sensorGroups || [])];
   let workingDevice = device;
   const hasGroup = workingDevice.configSensorGroupId != null
     && sensorGroups.some((g) => g.id === workingDevice.configSensorGroupId);
@@ -390,7 +390,7 @@ export function ensureDeviceSensorGroup(garage, level, device) {
       (g) => String(g.sensorProtocol || '').toUpperCase() === protocolKey,
     );
     if (!group) {
-      const newId = Math.max(0, ...sensorGroups.map((g) => Number(g.id) || 0)) + 1;
+      const newId = crypto.randomUUID();
       group = {
         ...defaultSensorGroup(newId, protocol),
         sensorProtocol: protocol,
@@ -401,7 +401,7 @@ export function ensureDeviceSensorGroup(garage, level, device) {
   }
 
   const levelId = level?.id;
-  const levels = (garage?.levels || []).map((l) => {
+  const levels = (site?.levels || []).map((l) => {
     if (levelId != null && l.id !== levelId) return l;
     const devices = l.devices || [];
     const idx = devices.findIndex((d) => d.id === workingDevice.id);
@@ -419,7 +419,7 @@ export function ensureDeviceSensorGroup(garage, level, device) {
 
   return {
     device: workingDevice,
-    garage: { ...garage, sensorGroups, levels },
+    site: { ...site, sensorGroups, levels },
   };
 }
 
@@ -431,15 +431,15 @@ export function buildDisplayGroupSheetRow(group) {
   ];
 }
 
-export function buildSensorGroupSheetRow(garage, level, group) {
-  const garageName = garage?.internalName || garage?.name || '';
+export function buildSensorGroupSheetRow(site, level, group) {
+  const siteName = site?.internalName || site?.name || '';
   const levelName = level?.internalName || level?.name || '';
   return [
     group.groupId || '',
     group.controllerAddress || '',
     group.controllerKey || '',
     group.sensorProtocol || 'NWAVE',
-    garageName,
+    siteName,
     levelName,
     group.parentLevel || '',
   ];
@@ -484,8 +484,8 @@ export function sensorGroupIdForDevice(device, sensorGroups = []) {
   return '';
 }
 
-export function garageSheetName(garage) {
-  return garage?.internalName || garage?.name || '';
+export function garageSheetName(site) {
+  return site?.internalName || site?.name || '';
 }
 
 export function levelSheetInternalName(level, levels = null) {
@@ -497,25 +497,25 @@ export function levelSheetInternalName(level, levels = null) {
 }
 
 /** Build DisplayLevels tab rows for a sign (one row per level, or one row with Level = All). */
-export function buildDisplayLevelSheetRows(device, garages = []) {
+export function buildDisplayLevelSheetRows(device, sites = []) {
   const displayName = signDisplayName(device);
-  if (!displayName || device?.displayGarageId == null) return [];
+  if (!displayName || device?.displaySiteId == null) return [];
 
-  const garage = garages.find((g) => g.id === device.displayGarageId);
-  if (!garage) return [];
+  const site = sites.find((s) => s.id === device.displaySiteId);
+  if (!site) return [];
 
-  const garageName = garageSheetName(garage);
+  const siteName = garageSheetName(site);
   const positionName = device?.positionName || '';
 
   if (device.displayLevelAll) {
-    return [[displayName, garageName, 'All', positionName, '']];
+    return [[displayName, siteName, 'All', positionName, '']];
   }
 
   const levelIds = Array.isArray(device.displayLevelIds) ? device.displayLevelIds : [];
   const levelEntries = levelIds.map((levelId) => {
-    const level = (garage.levels || []).find((l) => l.id === levelId);
+    const level = (site.levels || []).find((l) => l.id === levelId);
     if (!level) return null;
-    const sheetName = levelSheetInternalName(level, garage.levels);
+    const sheetName = levelSheetInternalName(level, site.levels);
     return {
       internal: sheetName,
       name: sheetName,
@@ -526,11 +526,11 @@ export function buildDisplayLevelSheetRows(device, garages = []) {
 
   if (levelEntries.length === 1) {
     const { internal, name } = levelEntries[0];
-    return [[displayName, garageName, internal, positionName, name]];
+    return [[displayName, siteName, internal, positionName, name]];
   }
 
   const levelCell = levelEntries.map((e) => e.internal).join(',');
-  return [[displayName, garageName, levelCell, positionName, '']];
+  return [[displayName, siteName, levelCell, positionName, '']];
 }
 
 export function buildDisplayControllerSheetRow(device, { displayGroups = [], servers = [] } = {}) {
@@ -572,12 +572,12 @@ export function buildSensorSheetRow(sensor, sensorGroupId) {
   ];
 }
 
-/** Build the default first site (garage) for a new customer. */
-export function buildInitialCustomerGarage(friendlyName, addressFields = {}) {
+/** Build the default first site for a new customer. */
+export function buildInitialCustomerSite(friendlyName, addressFields = {}) {
   const name = String(friendlyName || '').trim() || 'Site';
   const levelConfig = defaultLevelSheetConfig(1);
   return {
-    id: 1,
+    id: crypto.randomUUID(),
     name,
     internalName: name,
     address: addressFields.address || '',
@@ -593,7 +593,7 @@ export function buildInitialCustomerGarage(friendlyName, addressFields = {}) {
     sensorGroups: [],
     mdfIdfLocations: [],
     levels: [{
-      id: 1,
+      id: crypto.randomUUID(),
       name: 'Level 1',
       internalName: 'Level 1',
       totalSpots: 100,

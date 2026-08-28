@@ -45,7 +45,7 @@ function setStore({
   sensorGroups = [],
   canSync = true,
 } = {}) {
-  const garage = {
+  const site = {
     id: 1, name: 'North', internalName: 'North',
     levels, servers, displayGroups, sensorGroups, mdfIdfLocations: [],
     quickLinks: [], contacts: [],
@@ -54,10 +54,10 @@ function setStore({
     customers: [{
       id: CUSTOMER_ID, customerId: 'acme', code: 'ACME', friendlyName: 'Acme',
       ...(canSync ? { spreadsheetId: 'sheet-1' } : {}),
-      garages: [garage], config: {},
+      sites: [site], config: {},
     }],
     selectedCustomerId: CUSTOMER_ID,
-    selectedGarageId: 1,
+    selectedSiteId: 1,
     selectedLevelId: null,
     currentView: 'levels',
     hydration: { [CUSTOMER_ID]: 'hydrated' },
@@ -65,7 +65,7 @@ function setStore({
   });
 }
 
-const currentGarage = () => useAppStore.getState().customers[0].garages[0];
+const currentSite = () => useAppStore.getState().customers[0].sites[0];
 
 function field(labelText) {
   const label = screen.getByText(labelText);
@@ -135,8 +135,8 @@ describe('levels', () => {
     await user.type(field('Level Name *'), 'Level 2');
     await submit(user, /^add level$/i);
 
-    await waitFor(() => expect(currentGarage().levels).toHaveLength(2));
-    expect(currentGarage().levels.map((l) => l.name)).toContain('Level 2');
+    await waitFor(() => expect(currentSite().levels).toHaveLength(2));
+    expect(currentSite().levels.map((l) => l.name)).toContain('Level 2');
     await waitFor(() => expect(sync.syncGarageLevelsToSheet).toHaveBeenCalled());
   });
 
@@ -147,7 +147,7 @@ describe('levels', () => {
     await user.click(screen.getByRole('button', { name: /add level/i }));
     await submit(user, /^add level$/i);
 
-    expect(currentGarage().levels).toHaveLength(1);
+    expect(currentSite().levels).toHaveLength(1);
     expect(sync.syncGarageLevelsToSheet).not.toHaveBeenCalled();
   });
 
@@ -161,8 +161,8 @@ describe('levels', () => {
     setValue(field('EV Spots'), '8');
     await submit(user, /^add level$/i);
 
-    await waitFor(() => expect(currentGarage().levels).toHaveLength(2));
-    const added = currentGarage().levels.find((l) => l.name === 'Level 3');
+    await waitFor(() => expect(currentSite().levels).toHaveLength(2));
+    const added = currentSite().levels.find((l) => l.name === 'Level 3');
     expect(added.totalSpots).toBe(250);
     expect(added.evSpots).toBe(8);
   });
@@ -180,8 +180,8 @@ describe('levels', () => {
     await clickDelete(user, 'Level 2');
     await confirmDelete(user);
 
-    await waitFor(() => expect(currentGarage().levels).toHaveLength(1));
-    expect(currentGarage().levels[0].name).toBe('Level 1');
+    await waitFor(() => expect(currentSite().levels).toHaveLength(1));
+    expect(currentSite().levels[0].name).toBe('Level 1');
     await waitFor(() => expect(sync.syncGarageLevelsToSheet).toHaveBeenCalled());
   });
 });
@@ -197,8 +197,8 @@ describe('servers', () => {
     await user.type(field('Server Name *'), 'SRV-1');
     await submit(user, /^add server$/i);
 
-    await waitFor(() => expect(currentGarage().servers).toHaveLength(1));
-    expect(currentGarage().servers[0].name).toBe('SRV-1');
+    await waitFor(() => expect(currentSite().servers).toHaveLength(1));
+    expect(currentSite().servers[0].name).toBe('SRV-1');
     await waitFor(() => expect(sync.syncServersToSheet).toHaveBeenCalled());
   });
 
@@ -210,7 +210,7 @@ describe('servers', () => {
     await user.click(screen.getByRole('button', { name: /add server/i }));
     await submit(user, /^add server$/i);
 
-    expect(currentGarage().servers).toHaveLength(0);
+    expect(currentSite().servers).toHaveLength(0);
     expect(sync.syncServersToSheet).not.toHaveBeenCalled();
   });
 
@@ -223,7 +223,7 @@ describe('servers', () => {
     await clickDelete(user, 'SRV-1');
     await confirmDelete(user);
 
-    await waitFor(() => expect(currentGarage().servers).toHaveLength(0));
+    await waitFor(() => expect(currentSite().servers).toHaveLength(0));
     await waitFor(() => expect(sync.syncServersToSheet).toHaveBeenCalled());
   });
 });
@@ -239,8 +239,8 @@ describe('display groups', () => {
     await user.type(field('Group Name *'), 'Entry-Group');
     await submit(user, /^add group$/i);
 
-    await waitFor(() => expect(currentGarage().displayGroups).toHaveLength(1));
-    expect(currentGarage().displayGroups[0].name).toBe('Entry-Group');
+    await waitFor(() => expect(currentSite().displayGroups).toHaveLength(1));
+    expect(currentSite().displayGroups[0].name).toBe('Entry-Group');
     await waitFor(() => expect(sync.syncDisplayGroupsToSheet).toHaveBeenCalled());
   });
 
@@ -254,8 +254,8 @@ describe('display groups', () => {
     setValue(field('Force Send After (seconds)'), '45');
     await submit(user, /^add group$/i);
 
-    await waitFor(() => expect(currentGarage().displayGroups).toHaveLength(1));
-    expect(currentGarage().displayGroups[0].forceSendAfterSeconds).toBe(45);
+    await waitFor(() => expect(currentSite().displayGroups).toHaveLength(1));
+    expect(currentSite().displayGroups[0].forceSendAfterSeconds).toBe(45);
   });
 
   it('DELETE removes the group and gives the sync every site', async () => {
@@ -267,7 +267,7 @@ describe('display groups', () => {
     await clickDelete(user, 'Entry-Group');
     await confirmDelete(user);
 
-    await waitFor(() => expect(currentGarage().displayGroups).toHaveLength(0));
+    await waitFor(() => expect(currentSite().displayGroups).toHaveLength(0));
     await waitFor(() => expect(sync.syncDisplayGroupsToSheet).toHaveBeenCalled());
 
     // Without every site the sync cannot tell "deleted" from "another site
@@ -302,8 +302,8 @@ describe('sensor groups', () => {
     await user.type(field('Group ID *'), 'NWAVE-1');
     await submit(user, /^add group$/i);
 
-    await waitFor(() => expect(currentGarage().sensorGroups).toHaveLength(1));
-    expect(currentGarage().sensorGroups[0].groupId).toBe('NWAVE-1');
+    await waitFor(() => expect(currentSite().sensorGroups).toHaveLength(1));
+    expect(currentSite().sensorGroups[0].groupId).toBe('NWAVE-1');
     await waitFor(() => expect(sync.syncSensorGroupsToSheet).toHaveBeenCalled());
   });
 
@@ -318,8 +318,8 @@ describe('sensor groups', () => {
     await user.type(field('Controller Key'), 'key-abc');
     await submit(user, /^add group$/i);
 
-    await waitFor(() => expect(currentGarage().sensorGroups).toHaveLength(1));
-    const group = currentGarage().sensorGroups[0];
+    await waitFor(() => expect(currentSite().sensorGroups).toHaveLength(1));
+    const group = currentSite().sensorGroups[0];
     expect(group.controllerAddress).toBe('10.0.0.77');
     expect(group.controllerKey).toBe('key-abc');
   });
@@ -333,7 +333,7 @@ describe('sensor groups', () => {
     await clickDelete(user, 'NWAVE-1');
     await confirmDelete(user);
 
-    await waitFor(() => expect(currentGarage().sensorGroups).toHaveLength(0));
+    await waitFor(() => expect(currentSite().sensorGroups).toHaveLength(0));
     await waitFor(() => expect(sync.syncSensorGroupsToSheet).toHaveBeenCalled());
   });
 });
@@ -377,7 +377,7 @@ describe('a customer with no writable sheet', () => {
     await user.type(field('Level Name *'), 'Level 2');
     await submit(user, /^add level$/i);
 
-    await waitFor(() => expect(currentGarage().levels).toHaveLength(2));
+    await waitFor(() => expect(currentSite().levels).toHaveLength(2));
     expect(sync.syncGarageLevelsToSheet).not.toHaveBeenCalled();
   });
 });

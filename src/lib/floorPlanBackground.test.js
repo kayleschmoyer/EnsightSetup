@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   FLOOR_PLAN_ACCEPT,
+  MAX_FLOOR_PLAN_BYTES,
   MAX_FLOOR_PLAN_DATA_URL_CHARS,
   approxDataUrlBytes,
   compressOversizedBackgrounds,
@@ -48,10 +49,16 @@ describe('floorPlanBackground', () => {
     expect(approxDataUrlBytes(dataUrl(400))).toBe(300);
     expect(approxDataUrlBytes(null)).toBe(0);
   });
+
+  it('targets a ~500KB blob budget now that backgrounds upload to Storage', () => {
+    // Backgrounds are uploaded as Storage blobs (see ImageUploadService.uploadFloorPlanBackground)
+    // instead of embedded as base64 — the tight data-URL/Sheets-cell ceiling no longer applies.
+    expect(MAX_FLOOR_PLAN_BYTES).toBe(500_000);
+  });
 });
 
 describe('compressOversizedBackgrounds', () => {
-  const garages = () => ([
+  const sites = () => ([
     {
       id: 1,
       levels: [
@@ -67,13 +74,13 @@ describe('compressOversizedBackgrounds', () => {
     const compress = vi.fn();
     const result = await compressOversizedBackgrounds(input, { compress });
 
-    expect(result.garages).toBe(input);
+    expect(result.sites).toBe(input);
     expect(result.compressed).toBe(0);
     expect(compress).not.toHaveBeenCalled();
   });
 
   it('recompresses only the oversized plans and reports savings', async () => {
-    const input = garages();
+    const input = sites();
     const compress = vi.fn().mockResolvedValue(small);
     const result = await compressOversizedBackgrounds(input, { compress });
 
@@ -81,28 +88,28 @@ describe('compressOversizedBackgrounds', () => {
     expect(compress).toHaveBeenCalledWith(oversized);
     expect(result.compressed).toBe(1);
     expect(result.savedChars).toBe(oversized.length - small.length);
-    expect(result.garages[0].levels[0].bgImage).toBe(small);
+    expect(result.sites[0].levels[0].bgImage).toBe(small);
     // The already-small plan is passed through untouched.
-    expect(result.garages[0].levels[1]).toBe(input[0].levels[1]);
-    // Garages with nothing oversized keep their identity so store diffing stays cheap.
-    expect(result.garages[1]).toBe(input[1]);
+    expect(result.sites[0].levels[1]).toBe(input[0].levels[1]);
+    // Sites with nothing oversized keep their identity so store diffing stays cheap.
+    expect(result.sites[1]).toBe(input[1]);
   });
 
   it('keeps the original plan when compression fails or does not help', async () => {
-    const failing = await compressOversizedBackgrounds(garages(), {
+    const failing = await compressOversizedBackgrounds(sites(), {
       compress: vi.fn().mockRejectedValue(new Error('no canvas')),
     });
     expect(failing.compressed).toBe(0);
-    expect(failing.garages[0].levels[0].bgImage).toBe(oversized);
+    expect(failing.sites[0].levels[0].bgImage).toBe(oversized);
 
-    const bigger = await compressOversizedBackgrounds(garages(), {
+    const bigger = await compressOversizedBackgrounds(sites(), {
       compress: vi.fn().mockResolvedValue(dataUrl(MAX_FLOOR_PLAN_DATA_URL_CHARS + 5000)),
     });
     expect(bigger.compressed).toBe(0);
-    expect(bigger.garages[0].levels[0].bgImage).toBe(oversized);
+    expect(bigger.sites[0].levels[0].bgImage).toBe(oversized);
   });
 
-  it('tolerates missing garage/level arrays', async () => {
+  it('tolerates missing site/level arrays', async () => {
     await expect(compressOversizedBackgrounds(null)).resolves.toMatchObject({ compressed: 0 });
     await expect(compressOversizedBackgrounds([{ id: 1 }])).resolves.toMatchObject({ compressed: 0 });
   });

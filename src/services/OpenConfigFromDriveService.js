@@ -18,33 +18,33 @@ import {
 } from '../lib/customerUtils';
 import {
   defaultCustomerConfig,
-  mergeGaragesPreferNetworkingServers,
+  mergeSitesPreferNetworkingServers,
 } from '../lib/configSheetSchema';
 
-function addressFromFirstGarage(garages) {
-  const g = garages?.[0];
-  if (!g) return defaultCustomerConfig();
+function addressFromFirstSite(sites) {
+  const s = sites?.[0];
+  if (!s) return defaultCustomerConfig();
   return {
-    address: g.address || '',
-    city: g.city || '',
-    state: g.state || '',
-    zip: g.zip || '',
-    mapsUrl: g.mapsUrl || '',
+    address: s.address || '',
+    city: s.city || '',
+    state: s.state || '',
+    zip: s.zip || '',
+    mapsUrl: s.mapsUrl || '',
     support: defaultCustomerConfig().support,
   };
 }
 
-function attachConfigSheetLink(garages, sheetMeta, sourceFile) {
+function attachConfigSheetLink(sites, sheetMeta, sourceFile) {
   const sheetLink = sheetMeta
     ? customerSheetQuickLink(sheetMeta.spreadsheetTitle, sheetMeta.spreadsheetUrl)
     : null;
   const driveLink = sourceFile
     ? (sourceFile.webViewLink || `https://drive.google.com/file/d/${sourceFile.id}/view`)
     : null;
-  if (!sheetLink && !driveLink) return garages;
+  if (!sheetLink && !driveLink) return sites;
 
-  return garages.map((garage) => {
-    const existing = (garage.quickLinks || []).filter((l) => l.icon !== 'sheets');
+  return sites.map((site) => {
+    const existing = (site.quickLinks || []).filter((l) => l.icon !== 'sheets');
     const primaryLink = sheetLink || {
       id: 1,
       name: String(sourceFile.name || '').replace(/\.xlsx?$/i, '') || 'Configuration Sheet',
@@ -52,7 +52,7 @@ function attachConfigSheetLink(garages, sheetMeta, sourceFile) {
       icon: 'sheets',
     };
     return {
-      ...garage,
+      ...site,
       quickLinks: [primaryLink, ...existing],
     };
   });
@@ -120,7 +120,7 @@ export async function openConfigFromDriveFile({
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  const garagesFromTabs = attachConfigSheetLink(parsed.garages, sheetMeta, sourceFile);
+  const sitesFromTabs = attachConfigSheetLink(parsed.sites, sheetMeta, sourceFile);
   const displaySchedulesFromTabs = parsed.rawData?.displaySchedules || [];
   const sheetFields = {
     spreadsheetId: sheetMeta.spreadsheetId,
@@ -133,8 +133,8 @@ export async function openConfigFromDriveFile({
   // Prefer shared SetupJson layout when present (avoids tab flash then overwrite).
   let usedSetupJson = false;
   let nameFromSetup = '';
-  let garages = garagesFromTabs;
-  let importedConfig = addressFromFirstGarage(garagesFromTabs);
+  let sites = sitesFromTabs;
+  let importedConfig = addressFromFirstSite(sitesFromTabs);
   let displaySchedules = displaySchedulesFromTabs;
   let lastSetupSavedAt = null;
   // 'hydrated' — the shared layout was read.
@@ -149,13 +149,13 @@ export async function openConfigFromDriveFile({
       ...sheetFields,
       customerId: cid,
     });
-    if (snapshot?.customer?.garages) {
+    if (snapshot?.customer?.sites) {
       usedSetupJson = true;
       setupStatus = 'hydrated';
       // SetupJson owns layout; Networking tab owns servers (config fields).
-      garages = mergeGaragesPreferNetworkingServers(
-        attachConfigSheetLink(snapshot.customer.garages, sheetMeta, sourceFile),
-        garagesFromTabs,
+      sites = mergeSitesPreferNetworkingServers(
+        attachConfigSheetLink(snapshot.customer.sites, sheetMeta, sourceFile),
+        sitesFromTabs,
       );
       importedConfig = snapshot.customer.config || normalizeCustomerConfig({ config: snapshot.customer.config });
       if (Array.isArray(snapshot.customer.displaySchedules)) {
@@ -169,7 +169,7 @@ export async function openConfigFromDriveFile({
   } catch (err) {
     // A failed SetupJson read is NOT the same as "this customer has no shared
     // layout". Swallowing the difference is what used to lose data: the app
-    // showed tab-derived garages (no floor plans, no device positions, no
+    // showed tab-derived sites (no floor plans, no device positions, no
     // zones) as if they were the shared layout, and the next edit auto-saved
     // that over the real one. Tab data is still shown so the customer stays
     // openable, but the status marks it unsafe to write.
@@ -193,7 +193,7 @@ export async function openConfigFromDriveFile({
       code,
       friendlyName: resolvedName,
       config: importedConfig,
-      garages,
+      sites,
       ...sharedFields,
     });
     store.setHydration?.(customer.id, setupStatus);
@@ -211,7 +211,7 @@ export async function openConfigFromDriveFile({
   const needsAddress = !existingConfig.address && !existingConfig.city;
   store.updateCustomer(existing.id, {
     friendlyName: resolvedName,
-    garages,
+    sites,
     config: importedConfig,
     ...sharedFields,
     ...(needsAddress && !usedSetupJson ? customerConfigPatch(existing, importedConfig) : {}),

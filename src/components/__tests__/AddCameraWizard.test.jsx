@@ -450,10 +450,10 @@ describe('step 3 — traffic flow', () => {
     mount();
 
     await toConfig(user, 'bullet camera', 'FLI');
-    await chooseOption(user, selectNear('Coming from:'), 'Garage Entry');
+    await chooseOption(user, selectNear('Coming from:'), 'Site Entry');
     await submit(user);
 
-    expect(added().trafficFlow.comingFrom).toBe('garage-entry');
+    expect(added().trafficFlow.comingFrom).toBe('site-entry');
   });
 
   it('offers other levels as a source but not the camera’s own', async () => {

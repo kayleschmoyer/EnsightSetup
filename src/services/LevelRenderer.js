@@ -5,6 +5,7 @@
 import Konva from 'konva';
 import { LOGICAL_W, LOGICAL_H, getLogicalCanvasFit, getBackgroundFitRect } from '../lib/canvasConstants';
 import { coneWedgeRotation, isDualLensCamera } from '../lib/deviceNamingUtils';
+import { getFloorPlanSignedUrl } from './ImageUploadService';
 
 const DEVICE_SIZE = 10;
 
@@ -76,6 +77,9 @@ function addCameraWedge(group, { x = 0, y = 0, rotation, radius, fill }) {
 function loadImage(src) {
   return new Promise((resolve) => {
     const img = new window.Image();
+    // Signed Storage URLs are cross-origin — without this, stage.toDataURL()
+    // below throws on a tainted canvas.
+    img.crossOrigin = 'anonymous';
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = src;
@@ -368,8 +372,12 @@ export async function renderLevelToDataURL(level, {
   let groupScale = 1;
   let showGrid = true;
 
-  if (cropToBackground && level.bgImage) {
-    const img = await loadImage(level.bgImage);
+  // bgImage is a Storage object path — resolve it to a signed URL once and reuse
+  // it below, rather than re-signing for the crop-sizing pass and the draw pass.
+  const bgUrl = level.bgImage ? await getFloorPlanSignedUrl(level.bgImage) : null;
+
+  if (cropToBackground && bgUrl) {
+    const img = await loadImage(bgUrl);
     const fitRect = img ? getBackgroundFitRect(img.width, img.height) : null;
     if (fitRect) {
       const padding = 32;
@@ -408,8 +416,8 @@ export async function renderLevelToDataURL(level, {
 
     if (showGrid) addGrid(canvasGroup, groupScale);
 
-    if (level.bgImage) {
-      const img = await loadImage(level.bgImage);
+    if (bgUrl) {
+      const img = await loadImage(bgUrl);
       if (img) addBackgroundImage(canvasGroup, img);
     }
 

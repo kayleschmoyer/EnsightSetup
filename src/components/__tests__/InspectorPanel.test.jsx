@@ -29,8 +29,8 @@ vi.mock('../GroupAssignmentSelect', () => ({
   ),
 }));
 vi.mock('../DisplayLevelSelect', () => ({
-  default: ({ onGarageChange }) => (
-    <button type="button" aria-label="assign-display-levels" onClick={() => onGarageChange(1)}>
+  default: ({ onSiteChange }) => (
+    <button type="button" aria-label="assign-display-levels" onClick={() => onSiteChange(1)}>
       levels
     </button>
   ),
@@ -69,7 +69,7 @@ function setup(device = CAMERA, overrides = {}) {
     displayGroups: [{ id: 3, name: 'Grp' }],
     sensorGroups: [{ id: 4, groupId: 'G1', sensorProtocol: 'NWAVE' }],
     mdfIdfLocations: [{ id: 2, name: 'IDF-1' }],
-    garages: [{ id: 1, name: 'North', levels: [{ id: 10, name: 'Level 1' }] }],
+    sites: [{ id: 1, name: 'North', levels: [{ id: 10, name: 'Level 1' }] }],
     levels: [{ id: 10, name: 'Level 1' }],
     currentLevel: { id: 10, name: 'Level 1', devices: [device] },
     deviceTypes: {

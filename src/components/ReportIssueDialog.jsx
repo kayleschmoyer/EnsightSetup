@@ -15,7 +15,7 @@ import {
 import {
   useAppStore,
   useCurrentCustomer,
-  useCurrentGarage,
+  useCurrentSite,
   useCurrentLevel,
 } from '../stores/useAppStore';
 import PhotoPickControls from './PhotoPickControls';
@@ -36,7 +36,7 @@ const EMPTY_FORM = {
 
 export default function ReportIssueDialog({ open, onOpenChange }) {
   const customer = useCurrentCustomer();
-  const garage = useCurrentGarage();
+  const site = useCurrentSite();
   const level = useCurrentLevel();
   const currentView = useAppStore((s) => s.currentView);
 
@@ -97,7 +97,7 @@ export default function ReportIssueDialog({ open, onOpenChange }) {
         reporter: form.reporter,
         context: buildFeedbackContext({
           customer,
-          garage,
+          site,
           level,
           pathname: typeof window !== 'undefined' ? window.location.pathname : currentView,
         }),
@@ -257,11 +257,11 @@ export default function ReportIssueDialog({ open, onOpenChange }) {
                 />
               </div>
 
-              {(customer || garage || level) && (
+              {(customer || site || level) && (
                 <p className="text-[10px] text-muted-foreground">
                   Current context will be included automatically
                   {customer?.friendlyName ? `: ${customer.friendlyName}` : ''}
-                  {garage?.name ? ` / ${garage.name}` : ''}
+                  {site?.name ? ` / ${site.name}` : ''}
                   {level?.name ? ` / ${level.name}` : ''}.
                 </p>
               )}

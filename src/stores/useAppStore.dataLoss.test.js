@@ -1,101 +1,88 @@
 /**
  * The regression that matters most: a failed read of the shared layout must
- * never be written back over the sheet.
+ * never be written back over Supabase.
  *
- * The old sequence was — localStorage held garage/level stubs with empty
- * devices, the SetupJson read failed, the error surfaced only as a small chip,
- * the user dragged one device, and the 4s auto-save pushed the stub state over
- * a complete layout. Because the failure path also left `lastSetupSavedAt`
- * null, the conflict check was skipped and the overwrite was unconditional.
+ * The old sequence was — localStorage held site/level stubs with empty
+ * devices, the read failed, the error surfaced only as a small chip, the user
+ * dragged one device, and an auto-save pushed the stub state over a complete
+ * layout. Because the failure path also left `lastSetupSavedAt` null, the
+ * conflict check was skipped and the overwrite was unconditional. The
+ * hydration gate (customerNeedsHydration) is what closes that hole, and it's
+ * persistence-agnostic — this test now drives it against a fake
+ * CustomerRepository instead of a fake Google Sheets backend.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createFakeSheets } from '../services/__fixtures__/fakeSheets';
+import { createFakeCustomerRepository } from '../services/__fixtures__/fakeCustomerRepository';
 import { installBrowserEnv } from '../services/__fixtures__/browserEnv';
 
-const h = vi.hoisted(() => ({ fake: null, configBuffer: null }));
+const h = vi.hoisted(() => ({ fake: null }));
 
-vi.mock('../services/GoogleDriveService', () => ({
-  fetchWithTimeout: (...args) => h.fake.fetchWithTimeout(...args),
-  getAccessToken: () => 'test-token',
-  isSignedIn: () => true,
-  hadGoogleSession: () => true,
-  refreshAccessTokenSilently: async () => 'test-token',
-  invalidateGoogleAccessToken: () => {},
-  getFileMetadata: async () => ({ id: 'f', mimeType: 'application/vnd.google-apps.spreadsheet' }),
-  updateFileAppProperties: async () => ({}),
-  findConfigSheetInFolder: async () => null,
-  trashDriveFile: async () => ({}),
-  downloadConfigFile: async () => h.configBuffer ?? new ArrayBuffer(0),
-  renameDriveFile: async () => ({}),
-  SPREADSHEET_MIME: 'application/vnd.google-apps.spreadsheet',
+vi.mock('../services/CustomerRepository', () => ({
+  loadCustomerFull: (...args) => h.fake.loadCustomerFull(...args),
+  saveCustomerFull: (...args) => h.fake.saveCustomerFull(...args),
+  subscribeToCustomerChanges: (...args) => h.fake.subscribeToCustomerChanges(...args),
 }));
 
 installBrowserEnv();
 
 const { useAppStore } = await import('./useAppStore');
-const { setupJsonChunksFromPayload } = await import('../services/LayoutPersistenceService');
 
-const LAYOUT = {
-  schemaVersion: 1,
-  savedAt: '2026-08-07T10:00:00.000Z',
-  app: 'garage-layout-editor',
-  customer: {
-    customerId: 'acme',
-    code: 'ACME',
-    friendlyName: 'Acme',
-    config: { address: '1 Main', city: 'Boston', state: 'MA', zip: '02101', mapsUrl: '', support: {} },
-    garages: [{
-      id: 1,
-      name: 'North',
-      internalName: 'North',
-      levels: [{
-        id: 10,
-        name: 'Level 1',
-        bgImage: 'data:image/png;base64,AAAABBBBCCCC',
-        devices: [{ id: 'cam-1', type: 'cam-fli', name: '1.1F', x: 120, y: 240 }],
-        zones: [{ id: 'z1', points: [{ x: 0, y: 0 }] }],
-      }],
+const CUSTOMER_ID = 'acme-id';
+
+const LAYOUT_CUSTOMER = {
+  id: CUSTOMER_ID,
+  customerId: 'acme',
+  code: 'ACME',
+  friendlyName: 'Acme',
+  config: { address: '1 Main', city: 'Boston', state: 'MA', zip: '02101', mapsUrl: '', support: {} },
+  sites: [{
+    id: 'garage-1',
+    name: 'North',
+    internalName: 'North',
+    levels: [{
+      id: 'level-1',
+      name: 'Level 1',
+      bgImage: 'floor-plans/acme-id/garage-1/level-1/bg-1.webp',
+      devices: [{ id: 'cam-1', type: 'cam-fli', name: '1.1F', x: 120, y: 240 }],
+      zones: [{ id: 'z1', points: [{ x: 0, y: 0 }] }],
     }],
-  },
+  }],
 };
 
-let spreadsheetId;
-
 /** The customer as localStorage now stores it: pointers only, no layout. */
-function pointerCustomer() {
+function pointerCustomer(id = CUSTOMER_ID) {
   return {
-    id: 1,
+    id,
     customerId: 'acme',
     code: 'ACME',
     friendlyName: 'Acme',
-    spreadsheetId,
-    garages: null,
+    sites: null,
     lastSetupSavedAt: null,
   };
 }
 
-function writeCount() {
-  return h.fake.requests.filter((r) => r.method === 'PUT' || r.method === 'POST').length;
+function saveCallCount() {
+  return h.fake._saveCalls;
 }
 
-beforeEach(async () => {
-  h.fake = createFakeSheets();
-  const ss = h.fake.createSpreadsheet({ title: 'Acme-config', tabs: ['Garages', 'SetupJson'] });
-  spreadsheetId = ss.id;
-
-  const { writeTabValues } = await import('../services/GoogleSheetsService');
-  await writeTabValues(spreadsheetId, 'SetupJson', setupJsonChunksFromPayload(LAYOUT), {
-    valueInputOption: 'RAW',
-  });
+beforeEach(() => {
+  h.fake = createFakeCustomerRepository();
+  const originalSave = h.fake.saveCustomerFull.bind(h.fake);
+  h.fake._saveCalls = 0;
+  h.fake.saveCustomerFull = (...args) => {
+    h.fake._saveCalls += 1;
+    return originalSave(...args);
+  };
+  h.fake.seed(CUSTOMER_ID, LAYOUT_CUSTOMER);
 
   useAppStore.setState({
     customers: [pointerCustomer()],
-    selectedCustomerId: 1,
-    selectedGarageId: null,
+    selectedCustomerId: CUSTOMER_ID,
+    selectedSiteId: null,
     selectedLevelId: null,
     hydration: {},
     pendingRoute: null,
-    currentView: 'garages',
+    currentView: 'sites',
   });
 });
 
@@ -105,218 +92,139 @@ afterEach(() => {
 
 describe('a failed shared-layout read', () => {
   beforeEach(() => {
-    // Not retryable, so it fails fast rather than backing off for 15s.
-    h.fake.failNext({
-      match: (ctx) => ctx.method === 'GET' && ctx.path.includes('/values/'),
-      status: 500,
-      message: 'Backend error',
-      times: 99,
-    });
+    h.fake.loadCustomerFull = async () => { throw new Error('Backend error'); };
   });
 
-  it('marks the customer failed and leaves garages unloaded', async () => {
-    await useAppStore.getState().loadSetupFromSheet(1);
+  it('marks the customer failed and leaves sites unloaded', async () => {
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
 
     const state = useAppStore.getState();
-    expect(state.hydration[1]).toBe('failed');
+    expect(state.hydration[CUSTOMER_ID]).toBe('failed');
     expect(state.setupSync.status).toBe('error');
     // Crucially: no empty layout is fabricated to stand in for the real one.
-    expect(state.customers[0].garages).toBe(null);
+    expect(state.customers[0].sites).toBe(null);
   });
 
-  it('does not write anything to the sheet when the user then edits', async () => {
+  it('does not write anything when the user then edits', async () => {
     vi.useFakeTimers();
-    await useAppStore.getState().loadSetupFromSheet(1);
-    const before = writeCount();
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    const before = saveCallCount();
 
     // The user edits. Under the old code this scheduled an auto-save that
-    // replaced the entire SetupJson tab with the empty local state.
-    useAppStore.getState().updateCustomer(1, { friendlyName: 'Acme Renamed' });
-    useAppStore.getState().setGarages((garages) => [...garages, { id: 99, name: 'Ghost', levels: [] }]);
+    // replaced the entire shared layout with the empty local state.
+    useAppStore.getState().updateCustomer(CUSTOMER_ID, { friendlyName: 'Acme Renamed' });
+    useAppStore.getState().setSites((sites) => [...sites, { id: 'ghost', name: 'Ghost', levels: [] }]);
 
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(writeCount()).toBe(before);
-    expect(useAppStore.getState().customers[0].garages).toBe(null);
+    expect(saveCallCount()).toBe(before);
+    expect(useAppStore.getState().customers[0].sites).toBe(null);
   });
 
   it('refuses an explicit save too, not just the debounced one', async () => {
-    await useAppStore.getState().loadSetupFromSheet(1);
-    const before = writeCount();
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    const before = saveCallCount();
 
-    await useAppStore.getState().saveCustomerSetupToSheet(1);
+    await useAppStore.getState().saveCustomerSetup(CUSTOMER_ID);
 
-    expect(writeCount()).toBe(before);
+    expect(saveCallCount()).toBe(before);
     expect(useAppStore.getState().setupSync.status).toBe('error');
-  });
-
-  it('leaves the sheet byte-for-byte intact', async () => {
-    const snapshotBefore = JSON.stringify(h.fake.dumpTab(spreadsheetId, 'SetupJson'));
-    await useAppStore.getState().loadSetupFromSheet(1);
-    useAppStore.getState().updateCustomer(1, { friendlyName: 'Acme Renamed' });
-    await useAppStore.getState().saveCustomerSetupToSheet(1);
-
-    expect(JSON.stringify(h.fake.dumpTab(spreadsheetId, 'SetupJson'))).toBe(snapshotBefore);
   });
 });
 
 describe('recovering after the read succeeds', () => {
   it('hydrates the real layout and only then allows saving', async () => {
-    // One failure: the SetupJson read on the first attempt. The load aborts
-    // there, so nothing else is requested.
-    h.fake.failNext({
-      match: (ctx) => ctx.method === 'GET' && ctx.path.includes('/values/'),
-      status: 500,
-      message: 'Backend error',
-      times: 1,
-    });
+    // One failure on the first attempt, then it clears.
+    let attempt = 0;
+    const realLoad = h.fake.loadCustomerFull.bind(h.fake);
+    h.fake.loadCustomerFull = async (...args) => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('Backend error');
+      return realLoad(...args);
+    };
 
-    await useAppStore.getState().loadSetupFromSheet(1);
-    expect(useAppStore.getState().hydration[1]).toBe('failed');
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    expect(useAppStore.getState().hydration[CUSTOMER_ID]).toBe('failed');
 
     // Retry — the transient failure has cleared.
-    await useAppStore.getState().loadSetupFromSheet(1);
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
 
     const state = useAppStore.getState();
-    expect(state.hydration[1]).toBe('hydrated');
-    const level = state.customers[0].garages[0].levels[0];
+    expect(state.hydration[CUSTOMER_ID]).toBe('hydrated');
+    const level = state.customers[0].sites[0].levels[0];
     expect(level.devices).toHaveLength(1);
     expect(level.devices[0].x).toBe(120);
-    expect(level.bgImage).toBe('data:image/png;base64,AAAABBBBCCCC');
-    expect(state.customers[0].lastSetupSavedAt).toBe(LAYOUT.savedAt);
+    expect(level.bgImage).toBe(LAYOUT_CUSTOMER.sites[0].levels[0].bgImage);
+    expect(state.customers[0].lastSetupSavedAt).toBeTruthy();
   });
 });
 
-describe('a customer whose sheet genuinely has no shared layout', () => {
+describe('a customer whose Supabase row genuinely has no layout yet', () => {
   it('is treated as absent, not failed, so the first save is allowed', async () => {
-    const ss = h.fake.createSpreadsheet({ title: 'New-config', tabs: ['Garages'] });
     useAppStore.setState({
-      customers: [{ ...pointerCustomer(), id: 2, spreadsheetId: ss.id }],
-      selectedCustomerId: 2,
+      customers: [pointerCustomer('brand-new-id')],
+      selectedCustomerId: 'brand-new-id',
       hydration: {},
     });
 
-    await useAppStore.getState().loadSetupFromSheet(2);
+    await useAppStore.getState().loadCustomerSetup('brand-new-id');
 
     const state = useAppStore.getState();
-    expect(state.hydration[2]).toBe('absent');
-    expect(state.customers[0].garages).toEqual([]);
+    expect(state.hydration['brand-new-id']).toBe('absent');
+    expect(state.customers[0].sites).toEqual([]);
   });
 });
 
 describe('a browser upgrading from the previous build', () => {
-  /** What the old localStorage held: garage/level stubs, devices stripped. */
+  /** What old localStorage held: site/level stubs, devices stripped. */
   function legacyStubCustomer() {
     return {
-      id: 1,
+      id: CUSTOMER_ID,
       customerId: 'acme',
       code: 'ACME',
       friendlyName: 'Acme',
-      spreadsheetId,
       lastSetupSavedAt: null,
-      garages: [{
-        id: 1,
+      sites: [{
+        id: 'garage-1',
         name: 'North',
         internalName: 'North',
-        levels: [{ id: 10, name: 'Level 1', bgImage: null, devices: [], zones: [] }],
+        levels: [{ id: 'level-1', name: 'Level 1', bgImage: null, devices: [], zones: [] }],
         servers: [],
         displayGroups: [],
       }],
     };
   }
 
-  it('does not auto-save the stale stubs before the sheet is read', async () => {
+  it('does not auto-save the stale stubs before the real layout is read', async () => {
     vi.useFakeTimers();
     useAppStore.setState({
       customers: [legacyStubCustomer()],
-      selectedCustomerId: 1,
+      selectedCustomerId: CUSTOMER_ID,
       hydration: {},
       pendingRoute: null,
     });
-    const before = writeCount();
+    const before = saveCallCount();
 
     // The stubs are non-null, so nothing about the shape marks them unloaded.
     // The hydration state is what blocks the write.
-    useAppStore.getState().updateCustomer(1, { friendlyName: 'Renamed' });
+    useAppStore.getState().updateCustomer(CUSTOMER_ID, { friendlyName: 'Renamed' });
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(writeCount()).toBe(before);
+    expect(saveCallCount()).toBe(before);
   });
 
   it('replaces the stubs with the real layout on first load', async () => {
     useAppStore.setState({
       customers: [legacyStubCustomer()],
-      selectedCustomerId: 1,
+      selectedCustomerId: CUSTOMER_ID,
       hydration: {},
       pendingRoute: null,
     });
 
-    await useAppStore.getState().loadSetupFromSheet(1);
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
 
-    const level = useAppStore.getState().customers[0].garages[0].levels[0];
+    const level = useAppStore.getState().customers[0].sites[0].levels[0];
     expect(level.devices).toHaveLength(1);
-    expect(level.bgImage).toBe('data:image/png;base64,AAAABBBBCCCC');
-  });
-});
-
-describe('a SetupJson tab damaged by an older build', () => {
-  /** A partial write: ChunkTotal says 3, only 2 chunks are present. */
-  async function writeDamagedTab() {
-    const { writeTabValues } = await import('../services/GoogleSheetsService');
-    await writeTabValues(spreadsheetId, 'SetupJson', [
-      ['ChunkIndex', 'ChunkTotal', 'Data'],
-      [0, 3, 'SJ1:{"schemaVersion":1,'],
-      [1, 3, 'SJ1:"app":"garage-layout-editor",'],
-    ], { valueInputOption: 'RAW' });
-  }
-
-  it('is reported as damaged rather than as a transient failure', async () => {
-    await writeDamagedTab();
-    await useAppStore.getState().loadSetupFromSheet(1);
-
-    const { setupSync, hydration } = useAppStore.getState();
-    expect(hydration[1]).toBe('failed');
-    expect(setupSync.recoverable).toBe(true);
-    expect(setupSync.error).toMatch(/incomplete/i);
-  });
-
-  it('does not mark a network failure as damaged, so retry stays the answer', async () => {
-    h.fake.failNext({
-      match: (ctx) => ctx.method === 'GET' && ctx.path.includes('/values/'),
-      status: 500,
-      message: 'Backend error',
-      times: 1,
-    });
-    await useAppStore.getState().loadSetupFromSheet(1);
-    expect(useAppStore.getState().setupSync.recoverable).toBe(false);
-  });
-
-  it('recovers via a rebuild, replacing the damaged tab with a readable one', async () => {
-    // The config tabs still describe the sites/levels/devices, which is what
-    // makes a rebuild possible at all.
-    const XLSX = await import('xlsx');
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-      ['Garage', 'VisibleGarageName', 'Stage'],
-      ['North', 'North Deck', ''],
-    ]), 'Garages');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-      ['Garage', 'Level', 'VisibleLevelName', 'MaximumOccupancy'],
-      ['North', 'Level 1', 'Level 1', 120],
-    ]), 'GarageLevels');
-    h.configBuffer = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
-
-    await writeDamagedTab();
-    await useAppStore.getState().loadSetupFromSheet(1);
-    expect(useAppStore.getState().hydration[1]).toBe('failed');
-
-    await useAppStore.getState().rebuildSetupFromConfigTabs(1);
-
-    // Unstuck: editing is permitted again and the tab now parses.
-    expect(useAppStore.getState().hydration[1]).not.toBe('failed');
-    const { readSetupJsonFromSpreadsheet } = await import('../services/LayoutPersistenceService');
-    const recovered = await readSetupJsonFromSpreadsheet({ spreadsheetId });
-    expect(recovered.customer.garages[0].name).toBe('North Deck');
-    expect(recovered.customer.garages[0].levels).toHaveLength(1);
+    expect(level.bgImage).toBe(LAYOUT_CUSTOMER.sites[0].levels[0].bgImage);
   });
 });

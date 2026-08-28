@@ -1,0 +1,25 @@
+# AWS Amplify build spec for the Vite SPA (frontend only).
+#
+# This covers `npm run build` -> static `dist/` — the part of the app that IS
+# Amplify-deployable today. It does NOT cover api/create-clickup-task.js or
+# api/export-to-sheets.js: those are Vercel-style serverless functions with no
+# Amplify equivalent as written (see the Req 4 audit finding). They need to be
+# rehosted (Amplify Function / Lambda+API Gateway / a separate service) before
+# those two features work in an Amplify deployment — tracked as an open item
+# alongside the Req 1 Next.js/MySQL backend rewrite.
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - npm ci
+    build:
+      commands:
+        - npm run build
+  artifacts:
+    baseDirectory: dist
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - node_modules/**/*

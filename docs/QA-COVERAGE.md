@@ -481,7 +481,7 @@ Named here so they are visible rather than assumed covered.
   report issue, customer map — have no tests of their own. None of the three
   remaining ones writes to a config tab.
 - **Presentational components** — `MapCanvas`, `CustomerMapDialog`,
-  `GarageViewer3D`, `TrafficFlowView`, `ContactsSidebar`, `Weather` — have no
+  `TrafficFlowView`, `ContactsSidebar`, `Weather` — have no
   store or sync references and are not covered directly. The placement path
   through `MapCanvas` is covered from `EditorView`.
 

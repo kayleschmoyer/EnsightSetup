@@ -10,8 +10,9 @@ import {
 
 /** Create a new insert row for a multi-insert monument sign. */
 export function createSignInsert(partial = {}) {
-  const id = partial.id
-    || `ins-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  // A real uuid — sign_inserts.id is a uuid primary key (see
+  // 0009_device_field_normalization.sql), matching every other entity in the app.
+  const id = partial.id || crypto.randomUUID();
   return {
     id,
     displayName: partial.displayName ?? '',
@@ -115,26 +116,26 @@ export function buildDisplayControllerSheetRows(device, opts = {}) {
   }];
 }
 
-function buildLevelRowsForInsert(device, insert, garages = []) {
+function buildLevelRowsForInsert(device, insert, sites = []) {
   const displayName = insertSheetDisplayName(device, insert);
-  if (!displayName || device?.displayGarageId == null) return [];
+  if (!displayName || device?.displaySiteId == null) return [];
 
-  const garage = garages.find((g) => g.id === device.displayGarageId);
-  if (!garage) return [];
+  const site = sites.find((s) => s.id === device.displaySiteId);
+  if (!site) return [];
 
-  const garageName = garageSheetName(garage);
+  const siteName = garageSheetName(site);
   const positionName = device?.positionName || '';
   const levelAll = insert?.displayLevelAll ?? false;
   const levelIds = Array.isArray(insert?.displayLevelIds) ? insert.displayLevelIds : [];
 
   if (levelAll) {
-    return [[displayName, garageName, 'All', positionName, '']];
+    return [[displayName, siteName, 'All', positionName, '']];
   }
 
   const levelEntries = levelIds.map((levelId) => {
-    const level = (garage.levels || []).find((l) => l.id === levelId);
+    const level = (site.levels || []).find((l) => l.id === levelId);
     if (!level) return null;
-    const sheetName = levelSheetInternalName(level, garage.levels);
+    const sheetName = levelSheetInternalName(level, site.levels);
     return {
       internal: sheetName,
       name: sheetName,
@@ -145,21 +146,21 @@ function buildLevelRowsForInsert(device, insert, garages = []) {
 
   if (levelEntries.length === 1) {
     const { internal, name } = levelEntries[0];
-    return [[displayName, garageName, internal, positionName, name]];
+    return [[displayName, siteName, internal, positionName, name]];
   }
 
   const levelCell = levelEntries.map((e) => e.internal).join(',');
-  return [[displayName, garageName, levelCell, positionName, '']];
+  return [[displayName, siteName, levelCell, positionName, '']];
 }
 
 /**
  * DisplayLevels rows for a sign — one set per insert when inserts are present.
  */
-export function buildSignDisplayLevelSheetRows(device, garages = []) {
+export function buildSignDisplayLevelSheetRows(device, sites = []) {
   if (signUsesInserts(device) && device.inserts.length > 0) {
-    return device.inserts.flatMap((insert) => buildLevelRowsForInsert(device, insert, garages));
+    return device.inserts.flatMap((insert) => buildLevelRowsForInsert(device, insert, sites));
   }
-  return buildDisplayLevelSheetRows(device, garages);
+  return buildDisplayLevelSheetRows(device, sites);
 }
 
 /** Short labels for map icon / hover — controller, then each insert on its own line. */
@@ -178,14 +179,14 @@ export function signMapLabelLines(device) {
 }
 
 /** Human-readable level summary for an insert in the inspector. */
-export function insertLevelSummary(device, insert, garages = []) {
+export function insertLevelSummary(device, insert, sites = []) {
   if (insert?.displayLevelAll) return 'All levels';
-  const garage = garages.find((g) => g.id === device?.displayGarageId);
-  if (!garage) return 'No garage';
+  const site = sites.find((s) => s.id === device?.displaySiteId);
+  if (!site) return 'No site';
   const ids = Array.isArray(insert?.displayLevelIds) ? insert.displayLevelIds : [];
   if (!ids.length) return 'No level';
   const names = ids.map((id) => {
-    const level = (garage.levels || []).find((l) => l.id === id);
+    const level = (site.levels || []).find((l) => l.id === id);
     return level?.name || level?.internalName || String(id);
   });
   return names.join(', ');

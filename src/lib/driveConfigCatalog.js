@@ -4,7 +4,7 @@
  * re-seeds from the companion xlsx when present).
  */
 import { customerIdFromFileName, fileNameStem } from './customerUtils';
-import { countGaragesDevices } from './deviceCountUtils';
+import { countSitesDevices } from './deviceCountUtils';
 
 const SPREADSHEET_MIME = 'application/vnd.google-apps.spreadsheet';
 
@@ -24,19 +24,19 @@ export const CONFIG_META_PROP_KEYS = Object.freeze({
 
 /**
  * Build Drive appProperties (string values) from a serialized customer snapshot.
- * @param {{ config?: object, garages?: object[] }} customer
+ * @param {{ config?: object, sites?: object[] }} customer
  * @param {string} [savedAt] - snapshot ISO timestamp
  */
 export function buildConfigFileAppProperties(customer, savedAt = '') {
   const support = customer?.config?.support || {};
-  const garages = Array.isArray(customer?.garages) ? customer.garages : [];
-  const levelCount = garages.reduce((sum, g) => sum + (g.levels?.length || 0), 0);
+  const sites = Array.isArray(customer?.sites) ? customer.sites : [];
+  const levelCount = sites.reduce((sum, s) => sum + (s.levels?.length || 0), 0);
   return {
     [CONFIG_META_PROP_KEYS.enterprise]: support.enterpriseSite ? 'true' : 'false',
     [CONFIG_META_PROP_KEYS.support24h]: support.support24Hour ? 'true' : 'false',
-    [CONFIG_META_PROP_KEYS.sites]: String(garages.length),
+    [CONFIG_META_PROP_KEYS.sites]: String(sites.length),
     [CONFIG_META_PROP_KEYS.levels]: String(levelCount),
-    [CONFIG_META_PROP_KEYS.devices]: String(countGaragesDevices(garages)),
+    [CONFIG_META_PROP_KEYS.devices]: String(countSitesDevices(sites)),
     [CONFIG_META_PROP_KEYS.savedAt]: String(savedAt || ''),
   };
 }

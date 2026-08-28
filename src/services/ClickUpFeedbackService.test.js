@@ -5,7 +5,7 @@ describe('buildFeedbackContext', () => {
   it('includes customer, site, level, and path when provided', () => {
     const text = buildFeedbackContext({
       customer: { friendlyName: 'Exxon', customerId: 'exxon' },
-      garage: { name: 'Energy Garage' },
+      site: { name: 'Energy Garage' },
       level: { name: 'Level 1' },
       pathname: '/exxon/energy-garage/level-1',
     });

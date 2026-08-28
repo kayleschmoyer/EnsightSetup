@@ -3,6 +3,7 @@ import {
   prefersNativeCameraCapture,
   readImageFilesAsDataUrls,
   isOversizedDevicePhoto,
+  MAX_DEVICE_PHOTO_BYTES,
   MAX_DEVICE_PHOTO_DATA_URL_CHARS,
   MAX_SIGN_PHOTOS,
   compressOversizedDevicePhotos,
@@ -67,6 +68,14 @@ describe('readImageFilesAsDataUrls', () => {
   });
 });
 
+describe('MAX_DEVICE_PHOTO_BYTES', () => {
+  it('targets a ~500KB blob budget now that photos upload to Storage', () => {
+    // Photos are uploaded as Storage blobs (see ImageUploadService.uploadDevicePhoto)
+    // instead of embedded as base64 — the tight data-URL/Sheets-cell ceiling no longer applies.
+    expect(MAX_DEVICE_PHOTO_BYTES).toBe(500_000);
+  });
+});
+
 describe('device photo budgets', () => {
   it('flags oversized photos and caps sign count', () => {
     expect(isOversizedDevicePhoto(small)).toBe(false);
@@ -87,7 +96,7 @@ describe('compressOversizedDevicePhotos', () => {
     }];
     const compress = vi.fn();
     const result = await compressOversizedDevicePhotos(input, { compress });
-    expect(result.garages).toBe(input);
+    expect(result.sites).toBe(input);
     expect(result.compressed).toBe(0);
     expect(compress).not.toHaveBeenCalled();
   });
@@ -109,7 +118,7 @@ describe('compressOversizedDevicePhotos', () => {
 
     expect(compress).toHaveBeenCalledTimes(2);
     expect(result.compressed).toBe(2);
-    expect(result.garages[0].levels[0].devices[0].viewImage).toBe(small);
-    expect(result.garages[0].levels[0].devices[0].signImages).toEqual([small, small]);
+    expect(result.sites[0].levels[0].devices[0].viewImage).toBe(small);
+    expect(result.sites[0].levels[0].devices[0].signImages).toEqual([small, small]);
   });
 });

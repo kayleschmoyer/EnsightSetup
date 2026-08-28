@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -55,15 +55,46 @@ import {
   prepareDevicePhotoFromFile,
   prepareDevicePhotosFromFiles,
 } from '../lib/photoPick';
+import {
+  uploadDevicePhoto, getDevicePhotoSignedUrl, deleteStorageObject, DEVICE_PHOTO_BUCKET,
+} from '../services/ImageUploadService';
+
+/**
+ * Device photos are Storage object paths, not raw src-able data — resolve a
+ * short-lived signed URL before rendering (see ImageUploadService.getSignedUrl).
+ */
+function DevicePhoto({ path, alt, className }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    if (!path) return undefined;
+    let cancelled = false;
+    getDevicePhotoSignedUrl(path).then((signed) => {
+      if (!cancelled) setUrl(signed);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [path]);
+  if (!url) {
+    return <div className={className} aria-hidden="true" />;
+  }
+  return <img src={url} alt={alt} className={className} />;
+}
+
+// Matches MapCanvas.jsx's DEVICE_COLORS exactly — the cone preview here must
+// agree with what actually renders on the map when no explicit color is set.
+const CAMERA_CONE_DEFAULT_COLORS = {
+  'cam-fli': '#22c55e',
+  'cam-lpr': '#3b82f6',
+  'cam-people': '#06b6d4',
+};
 
 export default function InspectorPanel({
   device, onUpdateDevice, onCommitDeviceToSheet, onCopyDevice, onRemoveDevice, onDeleteDevice,
   onPlaceDevice,
   servers = [], displayGroups = [], sensorGroups = [], mdfIdfLocations = [],
-  garages = [],
+  sites = [],
   onAddDisplayGroup, onAddSensorGroup, onAddMdfIdfLocation,
   levels = [], currentLevel = null, deviceTypes, canSyncToSheet = false, onClose,
-  onToast,
+  onToast, customerId = null, siteId = null,
 }) {
   const [activeTab, setActiveTab] = useState('general');
   const [exportError, setExportError] = useState(null);
@@ -248,10 +279,10 @@ export default function InspectorPanel({
     : (device.displayGroupName
       ? displayGroups.find((g) => g.name === device.displayGroupName)
       : null);
-  const displayGarage = garages.find((g) => g.id === device.displayGarageId);
+  const displaySite = sites.find((s) => s.id === device.displaySiteId);
   const displayConfigSummary = [
     displayGroupResolved?.name || device.displayGroupName || '',
-    displayGarage?.name || displayGarage?.internalName || '',
+    displaySite?.name || displaySite?.internalName || '',
   ].filter(Boolean).join(' · ') || '—';
 
   const serverName = device.serverId != null
@@ -265,9 +296,9 @@ export default function InspectorPanel({
     : ((device.sided || 'single') === 'dual' ? [] : ['top']);
   const facingSummary = `${(device.sided || 'single') === 'dual' ? 'Dual' : 'Single'} · ${Math.round(device.rotation || 0)}° · display: ${boldSidesSummary.join(',') || '—'}`;
 
-  const fovRot = device.stream1?.rotation ?? 0;
   const fovCone = device.coneSize ?? device.stream1?.coneSize ?? 40;
-  const fovColor = device.color || device.stream1?.color || '#348fe2';
+  const fovColor = device.color || device.stream1?.color
+    || CAMERA_CONE_DEFAULT_COLORS[device.stream1?.streamType || device.type] || '#348fe2';
   const insertCount = Array.isArray(device.inserts) ? device.inserts.length : 0;
 
   const addInsert = () => {
@@ -662,10 +693,10 @@ export default function InspectorPanel({
                   {insertCount > 0 && (
                     <div className="rounded-md border border-border/70 divide-y divide-border/60">
                       {(device.inserts || []).map((insert, idx) => {
-                        const garage = garages.find((g) => g.id === device.displayGarageId);
-                        const garageLevels = garage?.levels || [];
+                        const site = sites.find((s) => s.id === device.displaySiteId);
+                        const siteLevels = site?.levels || [];
                         const selectedIds = Array.isArray(insert.displayLevelIds) ? insert.displayLevelIds : [];
-                        const levelSummary = insertLevelSummary(device, insert, garages);
+                        const levelSummary = insertLevelSummary(device, insert, sites);
                         const patchInsert = (patch, sync = false) => {
                           const next = (device.inserts || []).map((ins) => (
                             ins.id === insert.id ? { ...ins, ...patch } : ins
@@ -747,9 +778,9 @@ export default function InspectorPanel({
                                   {levelSummary}
                                 </span>
                               </div>
-                              {device.displayGarageId == null ? (
+                              {device.displaySiteId == null ? (
                                 <p className="text-[10px] text-amber-600">
-                                  Select a garage in Display Config first.
+                                  Select a site in Display Config first.
                                 </p>
                               ) : (
                                 <div className="space-y-0.5 max-h-40 overflow-y-auto rounded-md border border-border/60 bg-muted/20 p-1">
@@ -764,7 +795,7 @@ export default function InspectorPanel({
                                   >
                                     All
                                   </button>
-                                  {!insert.displayLevelAll && garageLevels.map((level) => {
+                                  {!insert.displayLevelAll && siteLevels.map((level) => {
                                     const selected = selectedIds.includes(level.id);
                                     const zone = isZoneLevel(level);
                                     return (
@@ -782,8 +813,8 @@ export default function InspectorPanel({
                                       </button>
                                     );
                                   })}
-                                  {!insert.displayLevelAll && garageLevels.length === 0 && (
-                                    <p className="px-2 py-1 text-[10px] text-muted-foreground">No levels in this garage.</p>
+                                  {!insert.displayLevelAll && siteLevels.length === 0 && (
+                                    <p className="px-2 py-1 text-[10px] text-muted-foreground">No levels in this site.</p>
                                   )}
                                 </div>
                               )}
@@ -821,12 +852,12 @@ export default function InspectorPanel({
                     addPlaceholder="e.g. Group1"
                   />
                   <DisplayLevelSelect
-                    garages={garages}
-                    garageId={device.displayGarageId ?? null}
+                    sites={sites}
+                    siteId={device.displaySiteId ?? null}
                     levelAll={!!device.displayLevelAll}
                     levelIds={device.displayLevelIds || []}
-                    onGarageChange={(id) => updateFields({
-                      displayGarageId: id,
+                    onSiteChange={(id) => updateFields({
+                      displaySiteId: id,
                       displayLevelAll: false,
                       displayLevelIds: [],
                     }, { syncToSheet: true })}
@@ -853,7 +884,7 @@ export default function InspectorPanel({
                   {device.server && !device.serverId ? (
                     <Input value={device.server} onChange={e => update('server', e.target.value)} onBlur={commitToSheet} className="mt-1.5" />
                   ) : (
-                    <Select value={device.serverId != null ? String(device.serverId) : 'none'} onValueChange={v => update('serverId', v === 'none' ? null : Number(v), { syncToSheet: true })}>
+                    <Select value={device.serverId != null ? String(device.serverId) : 'none'} onValueChange={v => update('serverId', v === 'none' ? null : v, { syncToSheet: true })}>
                       <SelectTrigger className="mt-1.5"><SelectValue placeholder="No server" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="none">No server</SelectItem>
@@ -875,6 +906,7 @@ export default function InspectorPanel({
                   onAddGroup={onAddMdfIdfLocation}
                   noneLabel="No location"
                   addDialogTitle="Add MDF / IDF Location"
+                  addDialogDescription="Network closets and rack locations devices can be assigned to for wiring reference."
                   addNameLabel="Location name"
                   addPlaceholder="e.g. MDF-1, IDF-East"
                 />
@@ -1003,7 +1035,7 @@ export default function InspectorPanel({
                   defaultOpen={false}
                   summary={(
                     <span className="inline-flex items-center gap-1.5 max-w-[180px]">
-                      <span className="truncate">{fovRot}° · {fovCone}px</span>
+                      <span className="truncate">{fovCone}px</span>
                       <span
                         className="inline-block h-2.5 w-2.5 rounded-full border border-border shrink-0"
                         style={{ backgroundColor: fovColor }}
@@ -1026,7 +1058,8 @@ export default function InspectorPanel({
                         const streamKey = `stream${n}`;
                         const rotVal = device[streamKey]?.rotation ?? 0;
                         const coneVal = device[streamKey]?.coneSize ?? device.coneSize ?? 40;
-                        const colorVal = device[streamKey]?.color || '#348fe2';
+                        const colorVal = device[streamKey]?.color
+                          || CAMERA_CONE_DEFAULT_COLORS[device[streamKey]?.streamType || device.type] || '#348fe2';
                         return (
                           <TabsContent key={n} value={streamKey} className="space-y-2 mt-2">
                             <div className="grid grid-cols-2 gap-2 items-end">
@@ -1043,7 +1076,9 @@ export default function InspectorPanel({
                                   className="w-6 h-6 rounded cursor-pointer border border-border" />
                               </div>
                             </div>
-                            <p className="text-[10px] text-muted-foreground">0° = same as device rotation. Rotate device on map to change base facing.</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              0° = same as device rotation. Each lens can be aimed independently.
+                            </p>
                             <div>
                               <div className="flex items-center justify-between">
                                 <Label className="text-[10px]">Cone Size</Label>
@@ -1059,21 +1094,13 @@ export default function InspectorPanel({
                     </Tabs>
                   ) : (
                     <div className="space-y-2">
-                      <div className="grid grid-cols-2 gap-2 items-end">
-                        <div className="min-w-0">
-                          <Label className="text-[10px]">Cone Direction (offset °)</Label>
-                          <Input type="number" min={-180} max={180} value={device.stream1?.rotation ?? 0}
-                            onChange={e => updateStream('stream1', 'rotation', Number(e.target.value))}
-                            className="mt-1 text-xs" />
-                        </div>
-                        <div className="flex items-center gap-2 pb-0.5">
-                          <Label className="text-[10px]">Color</Label>
-                          <input type="color" value={device.color || '#348fe2'}
-                            onChange={e => update('color', e.target.value)}
-                            className="w-6 h-6 rounded cursor-pointer border border-border" />
-                        </div>
+                      <div className="flex items-center gap-2">
+                        <Label className="text-[10px]">Color</Label>
+                        <input type="color" value={device.color
+                          || CAMERA_CONE_DEFAULT_COLORS[device.stream1?.streamType || device.type] || '#348fe2'}
+                          onChange={e => update('color', e.target.value)}
+                          className="w-6 h-6 rounded cursor-pointer border border-border" />
                       </div>
-                      <p className="text-[10px] text-muted-foreground">0° = same as device rotation. Use the map rotate handle or Rotation field above to change base facing.</p>
                       <div>
                         <div className="flex items-center justify-between">
                           <Label className="text-[10px]">Cone Size</Label>
@@ -1146,7 +1173,7 @@ export default function InspectorPanel({
                       <div>
                         <Label>Port</Label>
                         <Input
-                          value={getStreamField(`stream${n}`, 'port') || '554'}
+                          value={getStreamField(`stream${n}`, 'port')}
                           onChange={e => updateStream(`stream${n}`, 'port', e.target.value)}
                           onBlur={commitToSheet}
                           placeholder="554"
@@ -1183,7 +1210,7 @@ export default function InspectorPanel({
                   <div>
                     <Label>Port</Label>
                     <Input
-                      value={getDevicePort() || (isCamera ? '554' : '')}
+                      value={getDevicePort()}
                       onChange={e => isCamera ? updateStream('stream1', 'port', e.target.value) : update('port', e.target.value)}
                       onBlur={isCamera || isSign ? commitToSheet : undefined}
                       placeholder={isCamera ? '554' : '80'}
@@ -1246,9 +1273,13 @@ export default function InspectorPanel({
                   <div className="mt-1.5 border border-dashed border-border rounded-lg p-4 text-center">
                     {device.viewImage ? (
                       <div className="relative">
-                        <img src={device.viewImage} alt="Camera view" className="max-h-40 mx-auto rounded" />
+                        <DevicePhoto key={device.viewImage} path={device.viewImage} alt="Camera view" className="max-h-40 mx-auto rounded" />
                         <button
-                          onClick={() => update('viewImage', null)}
+                          onClick={() => {
+                            const oldPath = device.viewImage;
+                            update('viewImage', null);
+                            deleteStorageObject(DEVICE_PHOTO_BUCKET, oldPath).catch(() => {});
+                          }}
                           className="absolute top-1 right-1 p-1 rounded bg-background/80 hover:bg-background cursor-pointer"
                         >
                           <X className="w-3 h-3" />
@@ -1262,8 +1293,10 @@ export default function InspectorPanel({
                         onFiles={async (files) => {
                           try {
                             const prepared = await prepareDevicePhotoFromFile(files[0]);
-                            if (!prepared?.dataUrl) return;
-                            update('viewImage', prepared.dataUrl);
+                            const path = await uploadDevicePhoto(
+                              customerId, siteId, currentLevel?.id, device.id, 0, prepared.blob,
+                            );
+                            update('viewImage', path);
                             if (prepared.compressed) {
                               onToast?.('Camera photo resized for sharing');
                             }
@@ -1292,13 +1325,14 @@ export default function InspectorPanel({
                   {/* Existing photos */}
                   {device.signImages?.length > 0 && (
                     <div className="mt-2 grid grid-cols-2 gap-2">
-                      {device.signImages.map((src, idx) => (
+                      {device.signImages.map((path, idx) => (
                         <div key={idx} className="relative group border border-border rounded overflow-hidden bg-muted/30">
-                          <img src={src} alt={`Sign photo ${idx + 1}`} className="w-full h-24 object-cover" />
+                          <DevicePhoto path={path} alt={`Sign photo ${idx + 1}`} className="w-full h-24 object-cover" />
                           <button
                             onClick={() => {
                               const next = (device.signImages || []).filter((_, i) => i !== idx);
                               update('signImages', next);
+                              deleteStorageObject(DEVICE_PHOTO_BUCKET, path).catch(() => {});
                             }}
                             className="absolute top-1 right-1 p-1 rounded bg-background/80 hover:bg-destructive hover:text-destructive-foreground cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
                             title="Remove photo"
@@ -1330,7 +1364,10 @@ export default function InspectorPanel({
                             maxCount: remaining,
                           });
                           if (!prepared.length) return;
-                          update('signImages', [...existing, ...prepared.map((p) => p.dataUrl)]);
+                          const uploaded = await Promise.all(prepared.map((p, i) => uploadDevicePhoto(
+                            customerId, siteId, currentLevel?.id, device.id, existing.length + i, p.blob,
+                          )));
+                          update('signImages', [...existing, ...uploaded]);
                           const messages = [];
                           if (files.length > remaining) {
                             messages.push(`Added ${prepared.length} of ${files.length} (max ${MAX_SIGN_PHOTOS})`);

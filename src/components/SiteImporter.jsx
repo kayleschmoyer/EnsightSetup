@@ -27,7 +27,7 @@ import {
 import {
   customerIdFromFileName,
   customerCodeFromFileName,
-  mergeGarages,
+  mergeSites,
   customerConfigPatch,
   normalizeCustomerConfig,
 } from '../lib/customerUtils';
@@ -46,30 +46,30 @@ function formatDate(isoString) {
   });
 }
 
-function addressFromFirstGarage(garages) {
-  const g = garages?.[0];
-  if (!g) return defaultCustomerConfig();
+function addressFromFirstSite(sites) {
+  const s = sites?.[0];
+  if (!s) return defaultCustomerConfig();
   return {
-    address: g.address || '',
-    city: g.city || '',
-    state: g.state || '',
-    zip: g.zip || '',
-    mapsUrl: g.mapsUrl || '',
+    address: s.address || '',
+    city: s.city || '',
+    state: s.state || '',
+    zip: s.zip || '',
+    mapsUrl: s.mapsUrl || '',
     support: defaultCustomerConfig().support,
   };
 }
 
-function attachConfigSheetLink(garages, sheetMeta, selectedFile) {
+function attachConfigSheetLink(sites, sheetMeta, selectedFile) {
   const sheetLink = sheetMeta
     ? customerSheetQuickLink(sheetMeta.spreadsheetTitle, sheetMeta.spreadsheetUrl)
     : null;
   const driveLink = selectedFile
     ? (selectedFile.webViewLink || `https://drive.google.com/file/d/${selectedFile.id}/view`)
     : null;
-  if (!sheetLink && !driveLink) return garages;
+  if (!sheetLink && !driveLink) return sites;
 
-  return garages.map((garage) => {
-    const existing = (garage.quickLinks || []).filter((l) => l.icon !== 'sheets');
+  return sites.map((site) => {
+    const existing = (site.quickLinks || []).filter((l) => l.icon !== 'sheets');
     const primaryLink = sheetLink || {
       id: 1,
       name: selectedFile.name.replace(/\.xlsx?$/i, '') || 'Configuration Sheet',
@@ -77,7 +77,7 @@ function attachConfigSheetLink(garages, sheetMeta, selectedFile) {
       icon: 'sheets',
     };
     return {
-      ...garage,
+      ...site,
       quickLinks: [primaryLink, ...existing],
     };
   });
@@ -228,7 +228,7 @@ export default function SiteImporter() {
     // We know this layout — it came from the file the user just picked — so the
     // hydration gate has nothing to protect against here.
     store.setHydration(customerId, 'hydrated');
-    await store.saveCustomerSetupToSheet(customerId, { force: true });
+    await store.saveCustomerSetup(customerId, { force: true });
 
     const { setupSync } = useAppStore.getState();
     if (setupSync.customerId === customerId && setupSync.status === 'error') {
@@ -256,7 +256,7 @@ export default function SiteImporter() {
         existingSpreadsheetId: mode !== 'new' ? existingCustomer?.spreadsheetId : null,
       });
 
-      const garagesWithLink = attachConfigSheetLink(importResult.parsed.garages, sheetMeta, selectedFile);
+      const sitesWithLink = attachConfigSheetLink(importResult.parsed.sites, sheetMeta, selectedFile);
       const displaySchedules = importResult.parsed.rawData?.displaySchedules || [];
       const sheetFields = {
         spreadsheetId: sheetMeta.spreadsheetId,
@@ -269,13 +269,13 @@ export default function SiteImporter() {
       };
 
       if (mode === 'new') {
-        const importedConfig = addressFromFirstGarage(garagesWithLink);
+        const importedConfig = addressFromFirstSite(sitesWithLink);
         const customer = addCustomer({
           customerId: cid,
           code,
           friendlyName: name,
           config: importedConfig,
-          garages: garagesWithLink,
+          sites: sitesWithLink,
           ...sheetFields,
         });
         await commitImportedLayout(customer.id);
@@ -283,13 +283,13 @@ export default function SiteImporter() {
       }
 
       if (mode === 'merge') {
-        const merged = mergeGarages(existingCustomer.garages || [], garagesWithLink);
-        const importedConfig = addressFromFirstGarage(garagesWithLink);
+        const merged = mergeSites(existingCustomer.sites || [], sitesWithLink);
+        const importedConfig = addressFromFirstSite(sitesWithLink);
         const existingConfig = normalizeCustomerConfig(existingCustomer);
         const needsAddress = !existingConfig.address && !existingConfig.city;
         const updates = {
           friendlyName: name,
-          garages: merged,
+          sites: merged,
           ...sheetFields,
           ...(needsAddress ? customerConfigPatch(existingCustomer, importedConfig) : {}),
         };
@@ -299,10 +299,10 @@ export default function SiteImporter() {
       }
 
       if (mode === 'replace') {
-        const importedConfig = addressFromFirstGarage(garagesWithLink);
+        const importedConfig = addressFromFirstSite(sitesWithLink);
         const updates = {
           friendlyName: name,
-          garages: garagesWithLink,
+          sites: sitesWithLink,
           config: importedConfig,
           ...sheetFields,
         };
@@ -504,7 +504,7 @@ export default function SiteImporter() {
 
               <div className="grid grid-cols-3 gap-3">
                 {[
-                  { icon: Package, label: 'Garages', value: importResult.summary.totalGarages, color: 'text-primary' },
+                  { icon: Package, label: 'Sites', value: importResult.summary.totalSites, color: 'text-primary' },
                   { icon: Layers, label: 'Levels', value: importResult.summary.totalLevels, color: 'text-success' },
                   { icon: Cpu, label: 'Devices', value: importResult.summary.totalDevices, color: 'text-warning' },
                 ].map(({ icon: StatIcon, label, value, color }) => (
@@ -541,7 +541,7 @@ export default function SiteImporter() {
                   <span>
                     {importResult.summary.skippedDisplayLevelRows} display level row
                     {importResult.summary.skippedDisplayLevelRows !== 1 ? 's were' : ' was'} skipped
-                    because the level name did not match any level in the garage.
+                    because the level name did not match any level in the site.
                   </span>
                 </div>
               )}
@@ -549,7 +549,7 @@ export default function SiteImporter() {
               {!existingCustomer && (
                 <div className="flex items-start gap-2 p-3 rounded-lg bg-primary/10 text-xs">
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-primary" />
-                  <span>A new customer will be created with the garages from this file.</span>
+                  <span>A new customer will be created with the sites from this file.</span>
                 </div>
               )}
             </div>
@@ -657,7 +657,7 @@ export default function SiteImporter() {
           <DialogHeader>
             <DialogTitle className="text-destructive">Are you absolutely sure?</DialogTitle>
             <DialogDescription>
-              You are about to delete <strong>{existingCustomer?.garages?.length || 0} site(s)</strong> and all their data. Type nothing — just confirm you understand this is irreversible.
+              You are about to delete <strong>{existingCustomer?.sites?.length || 0} site(s)</strong> and all their data. Type nothing — just confirm you understand this is irreversible.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

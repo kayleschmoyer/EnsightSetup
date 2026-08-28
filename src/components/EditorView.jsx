@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect, lazy, Suspense } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useAppStore, useCurrentGarage, useCurrentLevel, useLevels, useCustomerGarages, useCurrentCustomer } from '../stores/useAppStore';
+import { useAppStore, useCurrentSite, useCurrentLevel, useLevels, useCustomerSites, useCurrentCustomer } from '../stores/useAppStore';
 
 const MotionDiv = motion.div;
 import { Button } from './ui/button';
@@ -22,7 +22,7 @@ import { exportAllConfigs } from '../services/ConfigService';
 import {
   Home, Camera, MonitorSpeaker as SignIcon, Radio, Server, Plus, Trash2,
   FileDown, Settings, Eye, Filter, LayoutGrid, Code2,
-  ChevronDown, ChevronUp, Sun, Moon, Search, X,
+  ChevronDown, ChevronUp, Search, X,
   ChevronsLeft, ChevronsRight, Image, MapPin, Square, Ban, SlidersHorizontal,
   MessageSquarePlus,
 } from 'lucide-react';
@@ -52,8 +52,8 @@ import {
   pruneUnusedDisplayGroups,
   defaultLevelSheetConfig,
 } from '../lib/configSheetSchema';
-import { customerHasConfigFile, customerCanSyncToSheet } from '../lib/customerConfigUtils';
-import { reconcileSignInGarages, removeSignFromGarage, signLogicalKey } from '../lib/deviceCountUtils';
+import { customerCanSyncToSheet } from '../lib/customerConfigUtils';
+import { reconcileSignInSites, removeSignFromSite, signLogicalKey } from '../lib/deviceCountUtils';
 import {
   ensureLinkedZonePolygon,
   floorLevels,
@@ -65,28 +65,9 @@ import AppSettingsDialog from './AppSettingsDialog';
 import ReportIssueDialog from './ReportIssueDialog';
 import SetupSyncIndicator from './SetupSyncIndicator';
 import { FLOOR_PLAN_ACCEPT, loadFloorPlanBackground } from '../lib/floorPlanBackground';
+import { uploadFloorPlanBackground, deleteStorageObject, FLOOR_PLAN_BUCKET } from '../services/ImageUploadService';
 import { formatFileSize } from '../lib/utils';
 import { LOGICAL_W, LOGICAL_H } from '../lib/canvasConstants';
-import {
-  syncCameraToSheet,
-  syncBulkCamerasToSheet,
-  syncBulkSignsToSheet,
-  syncBulkSensorsToSheet,
-  syncSensorToSheet,
-  syncSensorGroupsToSheet,
-  syncDisplayGroupsToSheet,
-  syncGarageLevelsToSheet,
-  deleteCameraFromSheet,
-  deleteSignFromSheet,
-  deleteSensorFromSheet,
-  deleteDevicesFromSheet,
-  deviceAfterCameraSync,
-  upsertDisplayGroupToSheet,
-  syncSignGroupAssignmentToSheet,
-  syncSignDisplayLevelsToSheet,
-  syncSensorGroupAssignmentToSheet,
-} from '../services/ConfigSheetSyncService';
-
 const deviceTypes = {
   cameras: [
     { id: 'cam-fli', name: 'FLI Camera' },
@@ -181,7 +162,7 @@ function makeBulkDeviceShape(type) {
       controllerName: '',
       visibleName: '',
       displayProtocol: '',
-      displayGarageId: null,
+      displaySiteId: null,
       displayLevelAll: false,
       displayLevelIds: [],
       inserts: [],
@@ -207,7 +188,7 @@ const SIGN_SHEET_SYNC_FIELDS = new Set([
   'port',
   'serialAddress',
   'displayProtocol',
-  'displayGarageId',
+  'displaySiteId',
   'displayLevelAll',
   'displayLevelIds',
   'inserts',
@@ -250,15 +231,15 @@ const DEVICE_COLORS = {
 };
 
 export default function EditorView() {
-  const garage = useCurrentGarage();
+  const site = useCurrentSite();
   const currentLevel = useCurrentLevel();
   const levels = useLevels();
   const currentIsZoneLevel = isZoneLevel(currentLevel);
-  const garages = useCustomerGarages();
+  const sites = useCustomerSites();
   const customer = useCurrentCustomer();
   const {
     selectedLevelId, setSelectedLevelId, setLevels, selectedDevice, setSelectedDevice,
-    goHome, mode, toggleMode, setGarages, localSaveError,
+    goHome, setSites,
   } = useAppStore();
 
   const [activeTab, setActiveTab] = useState('layout');
@@ -277,7 +258,6 @@ export default function EditorView() {
   const [hoveredDeviceId, setHoveredDeviceId] = useState(null);
   const [expandedDeviceGroups, setExpandedDeviceGroups] = useState({});
   const [bulkSelectedIds, setBulkSelectedIds] = useState(() => new Set());
-  const [sheetSyncing, setSheetSyncing] = useState(false);
   const [bgUploading, setBgUploading] = useState(false);
   const [placingDeviceId, setPlacingDeviceId] = useState(null);
   const [focusDeviceId, setFocusDeviceId] = useState(null);
@@ -287,44 +267,28 @@ export default function EditorView() {
   const stageRef = useRef(null);
   const setupSync = useAppStore((s) => s.setupSync);
 
-  const hasConfigFile = customerHasConfigFile(customer);
   const canSyncToSheet = customerCanSyncToSheet(customer);
-
-  const editorStatusBanner = useMemo(() => {
-    // Sheet-synced layout is owned by SetupJson — never surface browser-storage errors here.
-    if (localSaveError && !canSyncToSheet) {
-      return { className: 'border-destructive/20 bg-destructive/5 text-destructive', text: localSaveError };
-    }
-    if (hasConfigFile && !canSyncToSheet) {
-      return {
-        className: 'border-border bg-muted/30 text-muted-foreground',
-        text: 'Linked to an Excel file on Drive. Shared layout needs a Google Sheet — reload this customer from Drive on the Customers page to create one.',
-      };
-    }
-    // Linked Google Sheets auto-save layout to SetupJson — no local-persist warning needed.
-    return null;
-  }, [localSaveError, hasConfigFile, canSyncToSheet]);
 
   const applyDeviceUpdate = useCallback((deviceId, nextDevice) => {
     const state = useAppStore.getState();
     const customer = state.customers.find((c) => c.id === state.selectedCustomerId);
-    const garage = customer?.garages?.find((g) => g.id === state.selectedGarageId);
-    const level = garage?.levels?.find((l) => l.id === state.selectedLevelId);
-    if (!level || !garage) return;
+    const site = customer?.sites?.find((s) => s.id === state.selectedSiteId);
+    const level = site?.levels?.find((l) => l.id === state.selectedLevelId);
+    if (!level || !site) return;
 
     const sw = stageRef.current?.width();
     const sh = stageRef.current?.height();
     const stageMeta = sw && sh ? { stageW: sw, stageH: sh } : {};
 
     if (nextDevice?.type?.startsWith('sign-')) {
-      const newGarages = reconcileSignInGarages(garages, deviceId, nextDevice, {
-        stageGarageId: garage.id,
+      const newSites = reconcileSignInSites(sites, deviceId, nextDevice, {
+        stageSiteId: site.id,
         stageLevelId: level.id,
         stageMeta,
       });
-      setGarages(newGarages);
+      setSites(newSites);
     } else {
-      const newLevels = garage.levels.map((l) =>
+      const newLevels = site.levels.map((l) =>
         l.id === level.id
           ? {
               ...l,
@@ -336,39 +300,19 @@ export default function EditorView() {
       setLevels(newLevels);
     }
     if (state.selectedDevice?.id === deviceId) {
-      const updatedGarage = useAppStore.getState().customers
+      const updatedSite = useAppStore.getState().customers
         .find((c) => c.id === state.selectedCustomerId)
-        ?.garages?.find((g) => g.id === state.selectedGarageId);
-      const updatedLevel = updatedGarage?.levels?.find((l) => l.id === state.selectedLevelId);
+        ?.sites?.find((s) => s.id === state.selectedSiteId);
+      const updatedLevel = updatedSite?.levels?.find((l) => l.id === state.selectedLevelId);
       const refreshed = updatedLevel?.devices?.find((d) => d.id === deviceId)
-        || updatedGarage?.levels?.flatMap((l) => l.devices || []).find((d) => {
+        || updatedSite?.levels?.flatMap((l) => l.devices || []).find((d) => {
           if (!d.type?.startsWith('sign-')) return d.id === deviceId;
           const key = nextDevice.signLogicalKey || signLogicalKey(nextDevice);
           return (d.signLogicalKey || signLogicalKey(d)) === key;
         });
       setSelectedDevice(refreshed || nextDevice);
     }
-  }, [setLevels, setGarages, setSelectedDevice, stageRef, garages]);
-
-  const syncCameraDevice = useCallback(async (nextDevice, previousDevice = null) => {
-    if (!nextDevice?.type?.startsWith('cam-') || !canSyncToSheet) {
-      return nextDevice;
-    }
-    setSheetSyncing(true);
-    try {
-      await syncCameraToSheet({
-        customer,
-        garage,
-        level: currentLevel,
-        device: nextDevice,
-        previousDevice,
-        servers: garage?.servers || [],
-      });
-      return deviceAfterCameraSync(nextDevice);
-    } finally {
-      setSheetSyncing(false);
-    }
-  }, [customer, garage, currentLevel, canSyncToSheet]);
+  }, [setLevels, setSites, setSelectedDevice, stageRef, sites]);
 
   const devices = useMemo(() => safeArray(currentLevel?.devices), [currentLevel]);
   const virtualCounters = useMemo(
@@ -442,62 +386,40 @@ export default function EditorView() {
   }, []);
 
   const addDisplayGroup = useCallback(async (name) => {
-    if (!garage) return null;
+    if (!site) return null;
     const trimmed = String(name || '').trim();
     if (!trimmed) return null;
-    const groups = garage.displayGroups || [];
-    const newId = Math.max(0, ...groups.map((g) => g.id || 0)) + 1;
+    const groups = site.displayGroups || [];
+    const newId = crypto.randomUUID();
     const created = defaultDisplayGroup(newId, trimmed);
-    const nextGarage = { ...garage, displayGroups: [...groups, created] };
-    if (canSyncToSheet) {
-      setSheetSyncing(true);
-      try {
-        await upsertDisplayGroupToSheet({ customer, group: created });
-      } catch (err) {
-        showToast(`Config field sync failed: ${err.message}`);
-        return null;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-    setGarages(garages.map((g) => (g.id === garage.id ? nextGarage : g)));
+    const nextSite = { ...site, displayGroups: [...groups, created] };
+    setSites(sites.map((s) => (s.id === site.id ? nextSite : s)));
     return created;
-  }, [garage, garages, customer, canSyncToSheet, setGarages, showToast]);
+  }, [site, sites, setSites]);
 
   const addSensorGroup = useCallback(async (name) => {
-    if (!garage) return null;
+    if (!site) return null;
     const trimmed = String(name || '').trim();
     if (!trimmed) return null;
-    const groups = garage.sensorGroups || [];
-    const newId = Math.max(0, ...groups.map((g) => g.id || 0)) + 1;
+    const groups = site.sensorGroups || [];
+    const newId = crypto.randomUUID();
     const created = defaultSensorGroup(newId, trimmed);
-    const nextGarage = { ...garage, sensorGroups: [...groups, created] };
-    if (canSyncToSheet) {
-      setSheetSyncing(true);
-      try {
-        await syncSensorGroupsToSheet({ customer, garage: nextGarage });
-      } catch (err) {
-        showToast(`Config field sync failed: ${err.message}`);
-        return null;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-    setGarages(garages.map((g) => (g.id === garage.id ? nextGarage : g)));
+    const nextSite = { ...site, sensorGroups: [...groups, created] };
+    setSites(sites.map((s) => (s.id === site.id ? nextSite : s)));
     return created;
-  }, [garage, garages, customer, canSyncToSheet, setGarages, showToast]);
+  }, [site, sites, setSites]);
 
   const addMdfIdfLocation = useCallback(async (name) => {
-    if (!garage) return null;
+    if (!site) return null;
     const trimmed = String(name || '').trim();
     if (!trimmed) return null;
-    const locations = garage.mdfIdfLocations || [];
-    const newId = Math.max(0, ...locations.map((l) => l.id || 0)) + 1;
+    const locations = site.mdfIdfLocations || [];
+    const newId = crypto.randomUUID();
     const created = defaultMdfIdfLocation(newId, trimmed);
-    const nextGarage = { ...garage, mdfIdfLocations: [...locations, created] };
-    setGarages(garages.map((g) => (g.id === garage.id ? nextGarage : g)));
+    const nextSite = { ...site, mdfIdfLocations: [...locations, created] };
+    setSites(sites.map((s) => (s.id === site.id ? nextSite : s)));
     return created;
-  }, [garage, garages, setGarages]);
+  }, [site, sites, setSites]);
 
   // Handler for AddCameraWizard
   const handleAddCameraFromWizard = useCallback(async (wizardDevice) => {
@@ -507,7 +429,7 @@ export default function EditorView() {
       return;
     }
     const existingDevices = safeArray(currentLevel.devices);
-    const newId = existingDevices.length > 0 ? Math.max(...existingDevices.map(d => d.id)) + 1 : 1;
+    const newId = crypto.randomUUID();
 
     let newDevice = {
       id: newId,
@@ -540,22 +462,13 @@ export default function EditorView() {
       newDevice.name = name || wizardDevice.name || 'Camera';
     }
 
-    let syncWarning = null;
-    try {
-      newDevice = await syncCameraDevice(newDevice);
-    } catch (err) {
-      syncWarning = err.message;
-    }
-
     const newDevices = [...existingDevices, newDevice];
     setLevels(levels.map(l => l.id === currentLevel.id ? { ...l, devices: newDevices } : l));
     setSelectedDevice(newDevice);
     setInspectorCollapsed(false);
     setPlacingDeviceId(newDevice.id);
-    showToast(syncWarning
-      ? `Added ${newDevice.name} — config field sync failed: ${syncWarning}`
-      : `Added ${newDevice.name} — click the map to place`, { duration: syncWarning ? 5000 : 3500 });
-  }, [currentLevel, levels, setLevels, setSelectedDevice, showToast, syncCameraDevice]);
+    showToast(`Added ${newDevice.name} — click the map to place`, { duration: 3500 });
+  }, [currentLevel, levels, setLevels, setSelectedDevice, showToast]);
 
   // ============= Device CRUD =============
 
@@ -566,7 +479,7 @@ export default function EditorView() {
       return;
     }
     const existingDevices = safeArray(currentLevel.devices);
-    const newId = existingDevices.length > 0 ? Math.max(...existingDevices.map(d => d.id)) + 1 : 1;
+    const newId = crypto.randomUUID();
 
     const typeInfo = [
       ...deviceTypes.cameras,
@@ -609,7 +522,7 @@ export default function EditorView() {
       controllerName: type.startsWith('sign-') ? '' : undefined,
       visibleName: type.startsWith('sign-') ? '' : undefined,
       displayProtocol: type.startsWith('sign-') ? '' : undefined,
-      displayGarageId: type.startsWith('sign-') ? (garage?.id ?? null) : undefined,
+      displaySiteId: type.startsWith('sign-') ? (site?.id ?? null) : undefined,
       displayLevelAll: type.startsWith('sign-') ? false : undefined,
       displayLevelIds: type.startsWith('sign-') && currentLevel ? [currentLevel.id] : undefined,
       // Monument / multi-insert: empty until user adds inserts (sheet falls back to map ID).
@@ -631,82 +544,41 @@ export default function EditorView() {
     let nextLevels = levels.map((l) => (
       l.id === currentLevel.id ? { ...l, devices: [...existingDevices, deviceToAdd] } : l
     ));
-    let nextGarage = garage
-      ? { ...garage, levels: nextLevels }
+    let nextSite = site
+      ? { ...site, levels: nextLevels }
       : null;
 
     // Sensors must belong to a SensorGroups row before the Sensors tab can be written.
-    if (type.startsWith('sensor-') && nextGarage) {
+    if (type.startsWith('sensor-') && nextSite) {
       const ensured = ensureDeviceSensorGroup(
-        nextGarage,
+        nextSite,
         nextLevels.find((l) => l.id === currentLevel.id),
         deviceToAdd,
       );
       deviceToAdd = ensured.device;
-      nextGarage = ensured.garage;
-      nextLevels = nextGarage.levels;
+      nextSite = ensured.site;
+      nextLevels = nextSite.levels;
     }
 
-    if (nextGarage && type.startsWith('sensor-')) {
-      setGarages(garages.map((g) => (g.id === nextGarage.id ? nextGarage : g)));
+    if (nextSite && type.startsWith('sensor-')) {
+      setSites(sites.map((s) => (s.id === nextSite.id ? nextSite : s)));
     } else {
       setLevels(nextLevels);
     }
     setSelectedDevice(deviceToAdd);
     setInspectorCollapsed(false);
 
-    let syncWarning = null;
-    if (canSyncToSheet && type.startsWith('sign-')) {
-      setSheetSyncing(true);
-      try {
-        await syncBulkSignsToSheet({
-          customer,
-          garage,
-          level: currentLevel,
-          devices: nextLevels.find((l) => l.id === currentLevel.id)?.devices || [],
-          servers: garage?.servers || [],
-          displayGroups: garage?.displayGroups,
-          garages,
-        });
-      } catch (err) {
-        syncWarning = err.message;
-      } finally {
-        setSheetSyncing(false);
-      }
-    } else if (canSyncToSheet && type.startsWith('sensor-') && nextGarage) {
-      setSheetSyncing(true);
-      try {
-        const result = await syncSensorToSheet({
-          customer,
-          garage: nextGarage,
-          level: nextLevels.find((l) => l.id === currentLevel.id),
-          device: deviceToAdd,
-        });
-        if (result?.garage) {
-          setGarages(garages.map((g) => (g.id === result.garage.id ? result.garage : g)));
-        }
-        if (result?.device) {
-          setSelectedDevice(result.device);
-        }
-      } catch (err) {
-        syncWarning = err.message;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-
     setPlacingDeviceId(deviceToAdd.id);
-    showToast(syncWarning
-      ? `Added ${resolvedName} — config field sync failed: ${syncWarning}`
-      : `Added ${resolvedName} — click the map to place`, { duration: syncWarning ? 5000 : 3500 });
-  }, [currentLevel, levels, setLevels, setGarages, setSelectedDevice, showToast, garage, garages, customer, canSyncToSheet]);
+    showToast(`Added ${resolvedName} — click the map to place`, { duration: 3500 });
+  }, [currentLevel, levels, setLevels, setSites, setSelectedDevice, showToast, site, sites]);
 
-  const updateDevice = useCallback(async (deviceId, updates, options = {}) => {
-    const { syncToSheet = false } = options;
+  // Third arg (legacy { syncToSheet }) is still passed by InspectorPanel but
+  // everything persists through the store auto-save now, so it's ignored.
+  const updateDevice = useCallback(async (deviceId, updates) => {
     const state = useAppStore.getState();
     const customerState = state.customers.find((c) => c.id === state.selectedCustomerId);
-    const garageState = customerState?.garages?.find((g) => g.id === state.selectedGarageId);
-    const level = garageState?.levels?.find((l) => l.id === state.selectedLevelId);
+    const siteState = customerState?.sites?.find((s) => s.id === state.selectedSiteId);
+    const level = siteState?.levels?.find((l) => l.id === state.selectedLevelId);
     const existing = safeArray(level?.devices).find((d) => d.id === deviceId);
     if (!existing) return;
 
@@ -731,7 +603,7 @@ export default function EditorView() {
         const newName = cameraNameForTypeChange(
           existing,
           updates.type,
-          getLevelNamingNumber(level, garageState?.levels || []),
+          getLevelNamingNumber(level, siteState?.levels || []),
           level.devices,
         );
         resolvedUpdates = {
@@ -768,7 +640,7 @@ export default function EditorView() {
           nextDevice,
           applyDualLensNaming(
             nextDevice,
-            getLevelNamingNumber(level, garageState?.levels || []),
+            getLevelNamingNumber(level, siteState?.levels || []),
             level.devices,
             deviceId,
             { preserveName: true },
@@ -779,111 +651,36 @@ export default function EditorView() {
     if ('displayGroupId' in resolvedUpdates) {
       nextDevice.displayGroupName = displayGroupNameForDevice(
         nextDevice,
-        garageState?.displayGroups || [],
+        siteState?.displayGroups || [],
       );
     }
     applyDeviceUpdate(deviceId, nextDevice);
 
-    const isCamera = nextDevice.type?.startsWith('cam-');
-    const isSign = nextDevice.type?.startsWith('sign-');
+    // Changing (or clearing) a sensor's group must leave it in a valid
+    // protocol group — this assignment used to ride along the sheet-sync path.
     const isSensor = nextDevice.type?.startsWith('sensor-');
-    const needsCameraSync = syncToSheet && isCamera && canSyncToSheet;
-    const needsSignSync = syncToSheet && isSign && canSyncToSheet
-      && Object.keys(resolvedUpdates).some((k) => SIGN_SHEET_SYNC_FIELDS.has(k));
-    const needsSensorSync = syncToSheet && isSensor && canSyncToSheet
-      && 'configSensorGroupId' in resolvedUpdates;
-
-    if (!needsCameraSync && !needsSignSync && !needsSensorSync) {
-      if (resolvedUpdates.name && resolvedUpdates.name !== existing.name) {
-        showToast(`Renamed to ${resolvedUpdates.name}`);
-      }
-      return;
-    }
-
-    setSheetSyncing(true);
-    try {
-      if (needsCameraSync) {
-        const synced = await syncCameraDevice(nextDevice, existing);
-        applyDeviceUpdate(deviceId, synced);
-      }
-      if (needsSignSync) {
-        await syncSignGroupAssignmentToSheet({
-          customer: customerState,
-          garage: garageState,
-          device: nextDevice,
-          servers: garageState?.servers || [],
-          previousDevice: existing,
-        });
-        await syncSignDisplayLevelsToSheet({
-          customer: customerState,
-          device: nextDevice,
-          garages: customerState?.garages || [],
-          previousDevice: existing,
-        });
-      }
-      if (needsSensorSync) {
-        const result = await syncSensorGroupAssignmentToSheet({
-          customer: customerState,
-          garage: garageState,
-          level,
-          device: nextDevice,
-        });
-        if (result?.device) {
-          applyDeviceUpdate(deviceId, result.device);
-        }
-        if (result?.garage) {
-          const stateAfter = useAppStore.getState();
-          const allGarages = stateAfter.customers.find((c) => c.id === stateAfter.selectedCustomerId)?.garages || [];
-          setGarages(allGarages.map((g) => (g.id === result.garage.id ? result.garage : g)));
+    if (isSensor && 'configSensorGroupId' in resolvedUpdates && siteState && level) {
+      const hasValidGroup = nextDevice.configSensorGroupId != null
+        && (siteState.sensorGroups || []).some((g) => g.id === nextDevice.configSensorGroupId);
+      if (!hasValidGroup) {
+        const stateAfter = useAppStore.getState();
+        const customerAfter = stateAfter.customers.find((c) => c.id === stateAfter.selectedCustomerId);
+        const siteAfter = customerAfter?.sites?.find((s) => s.id === stateAfter.selectedSiteId);
+        const levelAfter = siteAfter?.levels?.find((l) => l.id === stateAfter.selectedLevelId);
+        if (siteAfter && levelAfter) {
+          const ensured = ensureDeviceSensorGroup(siteAfter, levelAfter, nextDevice);
+          setSites((customerAfter?.sites || []).map((s) => (
+            s.id === ensured.site.id ? ensured.site : s
+          )));
+          applyDeviceUpdate(deviceId, ensured.device);
         }
       }
-      if (resolvedUpdates.name && resolvedUpdates.name !== existing.name) {
-        showToast(`Renamed to ${resolvedUpdates.name}`);
-      }
-    } catch (err) {
-      showToast(`Config field sync failed: ${err.message}`);
-    } finally {
-      setSheetSyncing(false);
     }
-  }, [canSyncToSheet, syncCameraDevice, applyDeviceUpdate, setGarages, showToast]);
 
-  const commitDeviceToSheet = useCallback(async (deviceId) => {
-    if (!canSyncToSheet) return;
-    const state = useAppStore.getState();
-    const customerState = state.customers.find((c) => c.id === state.selectedCustomerId);
-    const garageState = customerState?.garages?.find((g) => g.id === state.selectedGarageId);
-    const level = garageState?.levels?.find((l) => l.id === state.selectedLevelId);
-    const existing = safeArray(level?.devices).find((d) => d.id === deviceId);
-    if (!existing) return;
-
-    const isCamera = existing.type?.startsWith('cam-');
-    const isSign = existing.type?.startsWith('sign-');
-    if (!isCamera && !isSign) return;
-
-    setSheetSyncing(true);
-    try {
-      if (isCamera) {
-        const synced = await syncCameraDevice(existing);
-        applyDeviceUpdate(deviceId, synced);
-      } else {
-        await syncSignGroupAssignmentToSheet({
-          customer: customerState,
-          garage: garageState,
-          device: existing,
-          servers: garageState?.servers || [],
-        });
-        await syncSignDisplayLevelsToSheet({
-          customer: customerState,
-          device: existing,
-          garages: customerState?.garages || [],
-        });
-      }
-    } catch (err) {
-      showToast(`Config field sync failed: ${err.message}`);
-    } finally {
-      setSheetSyncing(false);
+    if (resolvedUpdates.name && resolvedUpdates.name !== existing.name) {
+      showToast(`Renamed to ${resolvedUpdates.name}`);
     }
-  }, [canSyncToSheet, syncCameraDevice, applyDeviceUpdate, showToast]);
+  }, [applyDeviceUpdate, setSites, showToast]);
 
   const removeDevice = useCallback((deviceId) => {
     if (!currentLevel) return;
@@ -909,82 +706,27 @@ export default function EditorView() {
       }
     }
 
-    if (deviceToDelete?.type?.startsWith('cam-') && canSyncToSheet) {
-      setSheetSyncing(true);
-      try {
-        await deleteCameraFromSheet({ customer, device: deviceToDelete });
-      } catch (err) {
-        showToast(`Config field sync failed: ${err.message}`);
-        setSheetSyncing(false);
-        return;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-
-    if (deviceToDelete?.type?.startsWith('sign-') && canSyncToSheet) {
-      setSheetSyncing(true);
-      try {
-        await deleteSignFromSheet({ customer, device: deviceToDelete });
-      } catch (err) {
-        showToast(`Config field sync failed: ${err.message}`);
-        setSheetSyncing(false);
-        return;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-
     const newLevels = deviceToDelete?.type?.startsWith('sign-')
-      ? removeSignFromGarage({ levels }, deviceId)
+      ? removeSignFromSite({ levels }, deviceId)
       : levels.map((l) => ({
           ...l,
           devices: safeArray(l.devices).filter((d) => d.id !== deviceId),
         }));
 
-    let nextGarage = { ...garage, levels: newLevels };
+    let nextSite = { ...site, levels: newLevels };
     if (deviceToDelete?.type?.startsWith('sensor-')) {
-      nextGarage = pruneUnusedSensorGroups(nextGarage);
+      nextSite = pruneUnusedSensorGroups(nextSite);
     }
     if (deviceToDelete?.type?.startsWith('sign-')) {
-      nextGarage = pruneUnusedDisplayGroups(nextGarage);
+      nextSite = pruneUnusedDisplayGroups(nextSite);
     }
 
-    setGarages(garages.map((g) => (g.id === nextGarage.id ? nextGarage : g)));
+    setSites(sites.map((s) => (s.id === nextSite.id ? nextSite : s)));
     setLevels(newLevels);
     if (selectedDevice?.id === deviceId) setSelectedDevice(null);
 
-    let syncWarning = null;
-    if (deviceToDelete?.type?.startsWith('sensor-') && canSyncToSheet) {
-      setSheetSyncing(true);
-      try {
-        await deleteSensorFromSheet({ customer, device: deviceToDelete, garage: nextGarage });
-      } catch (err) {
-        syncWarning = err.message;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-
-    if (
-      deviceToDelete?.type?.startsWith('sign-')
-      && canSyncToSheet
-      && (nextGarage.displayGroups || []).length !== (garage.displayGroups || []).length
-    ) {
-      setSheetSyncing(true);
-      try {
-        await syncDisplayGroupsToSheet({ customer, garage: nextGarage });
-      } catch (err) {
-        syncWarning = syncWarning || err.message;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-
-    showToast(syncWarning
-      ? `Device deleted — config field sync failed: ${syncWarning}`
-      : 'Device deleted');
-  }, [levels, selectedDevice, setLevels, setSelectedDevice, setGarages, showToast, canSyncToSheet, customer, garage, garages]);
+    showToast('Device deleted');
+  }, [levels, selectedDevice, setLevels, setSelectedDevice, setSites, showToast, site, sites]);
 
   const toggleBulkSelected = useCallback((deviceId, checked) => {
     setBulkSelectedIds((prev) => {
@@ -1014,28 +756,12 @@ export default function EditorView() {
     }
     if (!toDelete.length) return;
 
-    const camerasAndSigns = toDelete.filter((d) => (
-      d.type?.startsWith('cam-') || d.type?.startsWith('sign-')
-    ));
     const sensors = toDelete.filter((d) => d.type?.startsWith('sensor-'));
-
-    if (camerasAndSigns.length && canSyncToSheet) {
-      setSheetSyncing(true);
-      try {
-        await deleteDevicesFromSheet({ customer, devices: camerasAndSigns });
-      } catch (err) {
-        showToast(`Config field sync failed: ${err.message}`);
-        setSheetSyncing(false);
-        return;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
 
     let newLevels = levels;
     for (const device of toDelete) {
       if (device.type?.startsWith('sign-')) {
-        newLevels = removeSignFromGarage({ levels: newLevels }, device.id);
+        newLevels = removeSignFromSite({ levels: newLevels }, device.id);
       }
     }
     const nonSignIds = new Set(
@@ -1048,51 +774,22 @@ export default function EditorView() {
       }));
     }
 
-    let nextGarage = { ...garage, levels: newLevels };
-    if (sensors.length) nextGarage = pruneUnusedSensorGroups(nextGarage);
+    let nextSite = { ...site, levels: newLevels };
+    if (sensors.length) nextSite = pruneUnusedSensorGroups(nextSite);
     if (toDelete.some((d) => d.type?.startsWith('sign-'))) {
-      nextGarage = pruneUnusedDisplayGroups(nextGarage);
+      nextSite = pruneUnusedDisplayGroups(nextSite);
     }
 
-    setGarages(garages.map((g) => (g.id === nextGarage.id ? nextGarage : g)));
+    setSites(sites.map((s) => (s.id === nextSite.id ? nextSite : s)));
     setLevels(newLevels);
     if (selectedDevice && idSet.has(selectedDevice.id)) setSelectedDevice(null);
     setBulkSelectedIds(new Set());
 
-    let syncWarning = null;
-    if (sensors.length && canSyncToSheet) {
-      setSheetSyncing(true);
-      try {
-        await deleteDevicesFromSheet({ customer, devices: sensors, garage: nextGarage });
-      } catch (err) {
-        syncWarning = err.message;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-
-    if (
-      toDelete.some((d) => d.type?.startsWith('sign-'))
-      && canSyncToSheet
-      && (nextGarage.displayGroups || []).length !== (garage.displayGroups || []).length
-    ) {
-      setSheetSyncing(true);
-      try {
-        await syncDisplayGroupsToSheet({ customer, garage: nextGarage });
-      } catch (err) {
-        syncWarning = syncWarning || err.message;
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-
     const count = toDelete.length;
-    showToast(syncWarning
-      ? `Deleted ${count} device${count === 1 ? '' : 's'} — config field sync failed: ${syncWarning}`
-      : `Deleted ${count} device${count === 1 ? '' : 's'}`);
+    showToast(`Deleted ${count} device${count === 1 ? '' : 's'}`);
   }, [
-    levels, selectedDevice, setLevels, setSelectedDevice, setGarages, showToast,
-    canSyncToSheet, customer, garage, garages,
+    levels, selectedDevice, setLevels, setSelectedDevice, setSites, showToast,
+    site, sites,
   ]);
 
   const copyDevice = useCallback(async (deviceId) => {
@@ -1100,7 +797,7 @@ export default function EditorView() {
     const existingDevices = safeArray(currentLevel.devices);
     const source = existingDevices.find(d => d.id === deviceId);
     if (!source) return;
-    const newId = existingDevices.length > 0 ? Math.max(...existingDevices.map(d => d.id)) + 1 : 1;
+    const newId = crypto.randomUUID();
     const used = new Set(existingDevices.map((d) => d.name));
     const namingLevel = getLevelNamingNumber(currentLevel, levels);
     let copyName;
@@ -1126,74 +823,24 @@ export default function EditorView() {
       copy = applyDualLensNaming(copy, namingLevel, existingDevices, null, { preserveName: false });
     }
 
-    let syncWarning = null;
-    if (canSyncToSheet && copy.type?.startsWith('cam-')) {
-      try {
-        copy = await syncCameraDevice(copy);
-      } catch (err) {
-        syncWarning = err.message;
-      }
-    }
-
     const newDevices = [...existingDevices, copy];
     setLevels(levels.map(l => l.id === currentLevel.id ? { ...l, devices: newDevices } : l));
     setSelectedDevice(copy);
     setInspectorCollapsed(false);
 
-    if (!syncWarning && canSyncToSheet && copy.type?.startsWith('sign-')) {
-      setSheetSyncing(true);
-      try {
-        await syncBulkSignsToSheet({
-          customer,
-          garage,
-          level: currentLevel,
-          devices: newDevices,
-          servers: garage?.servers || [],
-          displayGroups: garage?.displayGroups,
-          garages,
-        });
-      } catch (err) {
-        syncWarning = err.message;
-      } finally {
-        setSheetSyncing(false);
-      }
-    } else if (!syncWarning && copy.type?.startsWith('sensor-') && garage) {
+    if (copy.type?.startsWith('sensor-') && site) {
       const ensured = ensureDeviceSensorGroup(
-        { ...garage, levels: levels.map((l) => (l.id === currentLevel.id ? { ...l, devices: newDevices } : l)) },
+        { ...site, levels: levels.map((l) => (l.id === currentLevel.id ? { ...l, devices: newDevices } : l)) },
         { ...currentLevel, devices: newDevices },
         copy,
       );
       copy = ensured.device;
-      setGarages(garages.map((g) => (g.id === ensured.garage.id ? ensured.garage : g)));
+      setSites(sites.map((s) => (s.id === ensured.site.id ? ensured.site : s)));
       setSelectedDevice(copy);
-
-      if (canSyncToSheet) {
-        setSheetSyncing(true);
-        try {
-          const result = await syncSensorToSheet({
-            customer,
-            garage: ensured.garage,
-            level: ensured.garage.levels.find((l) => l.id === currentLevel.id),
-            device: copy,
-          });
-          if (result?.garage) {
-            setGarages(garages.map((g) => (g.id === result.garage.id ? result.garage : g)));
-          }
-          if (result?.device) {
-            setSelectedDevice(result.device);
-          }
-        } catch (err) {
-          syncWarning = err.message;
-        } finally {
-          setSheetSyncing(false);
-        }
-      }
     }
 
-    showToast(syncWarning
-      ? `Copied ${copy.name} — config field sync failed: ${syncWarning}`
-      : `Copied ${copy.name}`);
-  }, [currentLevel, levels, setLevels, setGarages, setSelectedDevice, showToast, canSyncToSheet, customer, garage, garages, syncCameraDevice]);
+    showToast(`Copied ${copy.name}`);
+  }, [currentLevel, levels, setLevels, setSites, setSelectedDevice, showToast, site, sites]);
 
   // ============= Zones =============
 
@@ -1209,7 +856,7 @@ export default function EditorView() {
     }
 
     const zoneName = nextZoneLevelName(currentLevel, levels);
-    const newId = Math.max(0, ...levels.map((l) => Number(l.id) || 0)) + 1;
+    const newId = crypto.randomUUID();
     const ordinal = levels.length + 1;
     const newLevel = {
       id: newId,
@@ -1245,23 +892,7 @@ export default function EditorView() {
       setSelectedDevice(null);
     }
     showToast(`Zone "${zoneName}" added`);
-
-    if (canSyncToSheet && customer && garage) {
-      setSheetSyncing(true);
-      try {
-        await syncGarageLevelsToSheet({
-          customer,
-          garage: { ...garage, levels: nextLevels },
-        });
-      } catch (err) {
-        showToast(`Zone added — sheet sync failed: ${err.message}`, { duration: 5000 });
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-  }, [
-    currentLevel, levels, setLevels, showToast, canSyncToSheet, customer, garage, setSelectedDevice,
-  ]);
+  }, [currentLevel, levels, setLevels, showToast, setSelectedDevice]);
 
   const updateZone = useCallback(async (zoneId, updates) => {
     if (!currentLevel) return;
@@ -1286,21 +917,7 @@ export default function EditorView() {
 
     setLevels(nextLevels);
     setSelectedZone((prev) => (prev?.id === zoneId ? { ...prev, ...updates } : prev));
-
-    if (linkedId != null && nameChanged && canSyncToSheet && customer && garage) {
-      setSheetSyncing(true);
-      try {
-        await syncGarageLevelsToSheet({
-          customer,
-          garage: { ...garage, levels: nextLevels },
-        });
-      } catch (err) {
-        showToast(`Zone renamed — sheet sync failed: ${err.message}`, { duration: 5000 });
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-  }, [currentLevel, levels, setLevels, canSyncToSheet, customer, garage, showToast]);
+  }, [currentLevel, levels, setLevels]);
 
   const deleteZone = useCallback(async (zoneId) => {
     if (!currentLevel) return;
@@ -1320,21 +937,7 @@ export default function EditorView() {
     setLevels(nextLevels);
     setSelectedZone(null);
     showToast('Zone deleted');
-
-    if (canSyncToSheet && customer && garage) {
-      setSheetSyncing(true);
-      try {
-        await syncGarageLevelsToSheet({
-          customer,
-          garage: { ...garage, levels: nextLevels },
-        });
-      } catch (err) {
-        showToast(`Zone deleted — sheet sync failed: ${err.message}`, { duration: 5000 });
-      } finally {
-        setSheetSyncing(false);
-      }
-    }
-  }, [currentLevel, levels, setLevels, showToast, canSyncToSheet, customer, garage]);
+  }, [currentLevel, levels, setLevels, showToast]);
 
   const beginPlaceDevice = useCallback((deviceId) => {
     if (!currentLevel || deviceId == null) return;
@@ -1399,17 +1002,17 @@ export default function EditorView() {
   // ============= PDF Export =============
 
   const exportPDF = useCallback(async () => {
-    if (!garage) return;
+    if (!site) return;
     try {
       // Dynamic import keeps jsPDF (~400 KB) out of the initial bundle.
-      const { generateGaragePDF } = await import('../services/PdfExportService');
-      await generateGaragePDF(garage, currentLevel?.id, stageRef);
+      const { generateSitePDF } = await import('../services/PdfExportService');
+      await generateSitePDF(site, currentLevel?.id, stageRef);
       showToast('PDF exported');
     } catch (e) {
       console.error('PDF export failed:', e);
       showToast('PDF export failed');
     }
-  }, [garage, currentLevel, showToast]);
+  }, [site, currentLevel, showToast]);
 
   // ============= Config Export =============
 
@@ -1420,14 +1023,14 @@ export default function EditorView() {
     }
     try {
       exportAllConfigs(devices, {
-        garages: garage ? [garage] : [],
-        projectName: customer?.name || garage?.name,
+        sites: site ? [site] : [],
+        projectName: customer?.name || site?.name,
       });
       showToast('Config files exported');
     } catch (err) {
       showToast('Export failed: ' + err.message);
     }
-  }, [devices, showToast, garage, customer]);
+  }, [devices, showToast, site, customer]);
 
   // ============= Level Settings =============
 
@@ -1465,7 +1068,6 @@ export default function EditorView() {
     // Build any bulk devices requested (added as unplaced with default IDs).
     // Zone-levels never accept cameras / signs / sensors.
     const existingDevices = safeArray(currentLevel.devices);
-    const startId = existingDevices.length > 0 ? Math.max(...existingDevices.map(d => d.id || 0)) + 1 : 1;
     const usedNames = new Set(existingDevices.map(d => d.name));
     const newDevices = [];
     if (!isZoneLevel(currentLevel)) {
@@ -1488,7 +1090,7 @@ export default function EditorView() {
           }
           usedNames.add(name);
           newDevices.push({
-            id: startId + newDevices.length,
+            id: crypto.randomUUID(),
             type: it.type,
             name,
             friendlyName: '',
@@ -1498,7 +1100,7 @@ export default function EditorView() {
             dhcp: false,
             ...makeBulkDeviceShape(it.type),
             ...(it.type.startsWith('sign-') ? {
-              displayGarageId: garage?.id ?? null,
+              displaySiteId: site?.id ?? null,
               displayLevelIds: [currentLevel.id],
             } : {}),
           });
@@ -1518,97 +1120,33 @@ export default function EditorView() {
       devices: mergedDevices,
     };
 
-    const levelMetaChanged =
-      nextLevel.name !== currentLevel.name
-      || nextLevel.totalSpots !== (Number(currentLevel.totalSpots) || 0)
-      || nextLevel.evSpots !== (Number(currentLevel.evSpots) || 0)
-      || nextLevel.handicapSpots !== (Number(currentLevel.handicapSpots) || 0);
-
-    const cameraBulk = newDevices.filter((d) => d.type?.startsWith('cam-'));
-    const signBulk = newDevices.filter((d) => d.type?.startsWith('sign-'));
     const sensorBulk = newDevices.filter((d) => d.type?.startsWith('sensor-'));
-    const needsSheetSync = canSyncToSheet && (
-      cameraBulk.length || signBulk.length || sensorBulk.length || levelMetaChanged
-    );
 
-    let garageForSave = garage;
-    if (sensorBulk.length && garage) {
-      let workingGarage = {
-        ...garage,
+    let siteForSave = site;
+    if (sensorBulk.length && site) {
+      let workingSite = {
+        ...site,
         levels: levels.map((l) => (l.id === currentLevel.id ? { ...nextLevel, devices: mergedDevices } : l)),
       };
       for (const sensor of sensorBulk) {
         const ensured = ensureDeviceSensorGroup(
-          workingGarage,
-          workingGarage.levels.find((l) => l.id === currentLevel.id),
+          workingSite,
+          workingSite.levels.find((l) => l.id === currentLevel.id),
           mergedDevices.find((d) => d.id === sensor.id) || sensor,
         );
-        workingGarage = ensured.garage;
-        mergedDevices = workingGarage.levels.find((l) => l.id === currentLevel.id)?.devices || mergedDevices;
+        workingSite = ensured.site;
+        mergedDevices = workingSite.levels.find((l) => l.id === currentLevel.id)?.devices || mergedDevices;
       }
       nextLevel.devices = mergedDevices;
-      garageForSave = workingGarage;
-    }
-
-    if (needsSheetSync) {
-      setSheetSyncing(true);
-      try {
-        if (cameraBulk.length) {
-          mergedDevices = await syncBulkCamerasToSheet({
-            customer,
-            garage: garageForSave,
-            level: nextLevel,
-            devices: mergedDevices,
-            servers: garageForSave?.servers || [],
-          });
-          nextLevel.devices = mergedDevices;
-        }
-        if (signBulk.length) {
-          await syncBulkSignsToSheet({
-            customer,
-            garage: garageForSave,
-            level: nextLevel,
-            devices: mergedDevices,
-            servers: garageForSave?.servers || [],
-            displayGroups: garageForSave?.displayGroups,
-            garages,
-          });
-        }
-        if (sensorBulk.length) {
-          const sensorResult = await syncBulkSensorsToSheet({
-            customer,
-            garage: garageForSave,
-            level: nextLevel,
-            devices: mergedDevices,
-          });
-          mergedDevices = sensorResult.devices;
-          nextLevel.devices = mergedDevices;
-          garageForSave = sensorResult.garage || garageForSave;
-        }
-        if (levelMetaChanged) {
-          const updatedLevels = levels.map((l) => (
-            l.id === currentLevel.id ? { ...nextLevel, devices: mergedDevices } : l
-          ));
-          await syncGarageLevelsToSheet({
-            customer,
-            garage: { ...garageForSave, levels: updatedLevels },
-          });
-        }
-      } catch (err) {
-        showToast(`Config field sync failed: ${err.message}`);
-        setSheetSyncing(false);
-        return;
-      } finally {
-        setSheetSyncing(false);
-      }
+      siteForSave = workingSite;
     }
 
     const finalLevels = levels.map((l) => (
       l.id === currentLevel.id ? { ...nextLevel, devices: mergedDevices } : l
     ));
-    if (sensorBulk.length && garageForSave) {
-      setGarages(garages.map((g) => (
-        g.id === garageForSave.id ? { ...garageForSave, levels: finalLevels } : g
+    if (sensorBulk.length && siteForSave) {
+      setSites(sites.map((s) => (
+        s.id === siteForSave.id ? { ...siteForSave, levels: finalLevels } : s
       )));
     } else {
       setLevels(finalLevels);
@@ -1621,13 +1159,16 @@ export default function EditorView() {
     }
     setBulkCounts(makeEmptyBulkCounts());
     setExpandedCategory(null);
-  }, [currentLevel, settingsForm, bulkCounts, levels, setLevels, setGarages, showToast, canSyncToSheet, customer, garage, garages]);
+  }, [currentLevel, settingsForm, bulkCounts, levels, setLevels, setSites, showToast, site, sites]);
 
   // ============= Background Image =============
 
-  const applyFloorPlanResult = useCallback((result) => {
-    if (!currentLevel || !result?.dataUrl) return;
-    setLevels(levels.map((l) => (l.id === currentLevel.id ? { ...l, bgImage: result.dataUrl } : l)));
+  const applyFloorPlanResult = useCallback(async (result) => {
+    if (!currentLevel || !result?.blob) return;
+    const oldPath = currentLevel.bgImage;
+    const path = await uploadFloorPlanBackground(customer?.id, site?.id, currentLevel.id, result.blob);
+    setLevels(levels.map((l) => (l.id === currentLevel.id ? { ...l, bgImage: path } : l)));
+    if (oldPath) deleteStorageObject(FLOOR_PLAN_BUCKET, oldPath).catch(() => {});
     if (result.sourceType === 'pdf') {
       showToast(
         result.pageCount > 1
@@ -1635,8 +1176,8 @@ export default function EditorView() {
           : 'Background set from PDF',
       );
     } else if (result.compressed) {
-      // Full-size photos are downscaled so the shared sheet save stays under
-      // Google's request limit — say so rather than silently changing the file.
+      // Full-size photos are downscaled so the upload stays fast and under budget —
+      // say so rather than silently changing the file.
       showToast(
         `Background image updated · resized to ${formatFileSize(result.compressedBytes)} for sharing`,
         { duration: 5000 },
@@ -1644,7 +1185,7 @@ export default function EditorView() {
     } else {
       showToast('Background image updated');
     }
-  }, [currentLevel, levels, setLevels, showToast]);
+  }, [currentLevel, levels, setLevels, showToast, customer, site]);
 
   const handleBgUpload = useCallback(async (e) => {
     const file = e.target.files?.[0];
@@ -1654,7 +1195,7 @@ export default function EditorView() {
     setBgUploading(true);
     try {
       const result = await loadFloorPlanBackground(file, { pageNumber: 1 });
-      applyFloorPlanResult(result);
+      await applyFloorPlanResult(result);
       if (result.sourceType === 'pdf' && result.pageCount > 1) {
         setPdfPagePrompt({ file, pageCount: result.pageCount });
       }
@@ -1670,7 +1211,7 @@ export default function EditorView() {
     setBgUploading(true);
     try {
       const result = await loadFloorPlanBackground(pdfPagePrompt.file, { pageNumber });
-      applyFloorPlanResult(result);
+      await applyFloorPlanResult(result);
       setPdfPagePrompt(null);
     } catch (err) {
       showToast(err.message || 'Failed to load PDF page.', { duration: 5000 });
@@ -1681,11 +1222,13 @@ export default function EditorView() {
 
   const clearBackground = useCallback(() => {
     if (!currentLevel?.bgImage) return;
+    const oldPath = currentLevel.bgImage;
     setLevels(levels.map((l) => (l.id === currentLevel.id ? { ...l, bgImage: null } : l)));
+    deleteStorageObject(FLOOR_PLAN_BUCKET, oldPath).catch(() => {});
     showToast('Background cleared');
   }, [currentLevel, levels, setLevels, showToast]);
 
-  if (!garage || !currentLevel) {
+  if (!site || !currentLevel) {
     return (
       <div className="h-screen flex items-center justify-center bg-background text-sm text-muted-foreground">
         Select a level to open the layout editor.
@@ -1712,10 +1255,10 @@ export default function EditorView() {
           </button>
           <Separator orientation="vertical" className="h-5 bg-[#3a424b]" />
           <span className="text-[15px] font-bold">Layout Editor</span>
-          <span className="rounded border border-[#495057] bg-[#282e35] px-2.5 py-1 text-[10px] font-semibold text-[#adb5bd]">{garage.name}</span>
+          <span className="rounded border border-[#495057] bg-[#282e35] px-2.5 py-1 text-[10px] font-semibold text-[#adb5bd]">{site.name}</span>
 
           {/* Level Selector */}
-          <Select value={String(selectedLevelId)} onValueChange={(v) => setSelectedLevelId(Number(v))}>
+          <Select value={String(selectedLevelId)} onValueChange={(v) => setSelectedLevelId(v)}>
             <SelectTrigger className="h-7 w-auto border-[#495057] bg-[#20272f] px-2 text-[11px] text-white shadow-none">
               <SelectValue />
             </SelectTrigger>
@@ -1788,24 +1331,8 @@ export default function EditorView() {
           <Button variant="ghost" size="icon-sm" className="text-[#949494] hover:bg-[#282e35] hover:text-white" onClick={openSettings} title="Level settings" aria-label="Level settings">
             <SlidersHorizontal className="w-4 h-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="text-[#949494] hover:bg-[#282e35] hover:text-white"
-            onClick={toggleMode}
-            title="Toggle theme"
-            aria-label={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-          >
-            {mode === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          </Button>
         </div>
       </header>
-
-      {editorStatusBanner && (
-        <div className={`shrink-0 px-4 py-1.5 border-b text-xs text-center ${editorStatusBanner.className}`}>
-          {editorStatusBanner.text}
-        </div>
-      )}
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
@@ -2208,9 +1735,9 @@ export default function EditorView() {
                         ? 'border-amber-500/40 text-amber-800 dark:text-amber-200'
                         : 'border-border text-muted-foreground'
                     }`}>
-                      {setupSync.status === 'saving' && 'Saving shared layout…'}
-                      {setupSync.status === 'conflict' && 'Shared layout conflict — use Reload or Overwrite in the header.'}
-                      {setupSync.status === 'error' && (setupSync.error || 'Shared layout save failed — see header.')}
+                      {setupSync.status === 'saving' && 'Saving…'}
+                      {setupSync.status === 'conflict' && 'Save conflict — use Reload or Overwrite in the header.'}
+                      {setupSync.status === 'error' && (setupSync.error || 'Save failed — see header.')}
                     </div>
                   </div>
                 )}
@@ -2248,7 +1775,6 @@ export default function EditorView() {
               <InspectorPanel
                 device={selectedDevice}
                 onUpdateDevice={updateDevice}
-                onCommitDeviceToSheet={commitDeviceToSheet}
                 onCopyDevice={copyDevice}
                 onPlaceDevice={beginPlaceDevice}
                 onRemoveDevice={(id) => {
@@ -2259,11 +1785,11 @@ export default function EditorView() {
                   const d = devices.find(d => d.id === id);
                   setConfirmDelete({ message: `Permanently delete \"${d?.name || 'device'}\"?`, action: () => deleteDevice(id) });
                 }}
-                servers={garage.servers || []}
-                displayGroups={garage.displayGroups || []}
-                sensorGroups={garage.sensorGroups || []}
-                mdfIdfLocations={garage.mdfIdfLocations || []}
-                garages={garages}
+                servers={site.servers || []}
+                displayGroups={site.displayGroups || []}
+                sensorGroups={site.sensorGroups || []}
+                mdfIdfLocations={site.mdfIdfLocations || []}
+                sites={sites}
                 onAddDisplayGroup={addDisplayGroup}
                 onAddSensorGroup={addSensorGroup}
                 onAddMdfIdfLocation={addMdfIdfLocation}
@@ -2271,6 +1797,8 @@ export default function EditorView() {
                 currentLevel={currentLevel}
                 deviceTypes={deviceTypes}
                 canSyncToSheet={canSyncToSheet}
+                customerId={customer?.id}
+                siteId={site?.id}
                 onClose={() => {
                   setInspectorCollapsed(true);
                   setSelectedDevice(null);
@@ -2388,25 +1916,13 @@ export default function EditorView() {
               Loading config editor…
             </div>
           }>
-            <ConfigEditor garages={garages} />
+            <ConfigEditor sites={sites} />
           </Suspense>
         )}
       </div>
 
       {/* Toast */}
       <AnimatePresence>
-        {sheetSyncing && (
-          <MotionDiv
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed top-16 right-4 z-50 px-3 py-1.5 rounded-md border border-border bg-card text-xs text-muted-foreground shadow-md"
-            role="status"
-            aria-live="polite"
-          >
-            Syncing config fields…
-          </MotionDiv>
-        )}
         {toast && (
           <MotionDiv
             initial={{ opacity: 0, y: 20 }}
@@ -2552,7 +2068,7 @@ export default function EditorView() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowSettingsModal(false)}>Cancel</Button>
-            <Button onClick={saveSettings} disabled={sheetSyncing}>
+            <Button onClick={saveSettings}>
               {bulkSummary.total > 0 ? `Save & Add ${bulkSummary.total} Device${bulkSummary.total === 1 ? '' : 's'}` : 'Save Settings'}
             </Button>
           </DialogFooter>
@@ -2566,7 +2082,7 @@ export default function EditorView() {
         initialStreamType={wizardCameraType}
         levels={levels}
         currentLevel={currentLevel}
-        servers={garage?.servers || []}
+        servers={site?.servers || []}
         onAddCamera={handleAddCameraFromWizard}
       />
 

@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { useAppStore, useCurrentGarage, useCurrentCustomer, useCustomerGarages } from '../stores/useAppStore';
+import { useAppStore, useCurrentSite, useCurrentCustomer, useCustomerSites } from '../stores/useAppStore';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -15,36 +15,29 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import ContactsSidebar from './ContactsSidebar';
 import Weather from './Weather';
 import SetupSyncIndicator from './SetupSyncIndicator';
-import { customerCanSyncToSheet } from '../lib/customerConfigUtils';
 import { customerLocationFields } from '../lib/customerUtils';
-import { defaultLevelSheetConfig, defaultDisplayGroup, defaultSensorGroup, DISPLAY_GROUP_DEFAULT_FORCE_SEND_SECONDS } from '../lib/configSheetSchema';
-import { countGarageDevices } from '../lib/deviceCountUtils';
+import {
+  defaultLevelSheetConfig, defaultDisplayGroup, defaultSensorGroup,
+  DISPLAY_GROUP_DEFAULT_FORCE_SEND_SECONDS, ensureDeviceSensorGroup,
+} from '../lib/configSheetSchema';
+import { countSiteDevices } from '../lib/deviceCountUtils';
 import { getLevelNamingNumber } from '../lib/deviceNamingUtils';
 import { LOGICAL_H, LOGICAL_W } from '../lib/canvasConstants';
 import {
   ZONE_LEVEL_TYPE,
   ensureLinkedZonePolygon,
   floorLevels,
+  isDuplicateZoneName,
   isZoneLevel,
   nextZoneLevelName,
   removeLinkedZonePolygons,
   zoneLevels,
   zoneSheetLevelName,
 } from '../lib/zoneLevelUtils';
-import {
-  syncGarageLevelsToSheet,
-  syncBulkCamerasToSheet,
-  syncBulkSignsToSheet,
-  syncBulkSensorsToSheet,
-  syncDisplayGroupsToSheet,
-  syncSensorGroupsToSheet,
-  syncServersToSheet,
-  clearDisplayGroupFromSignsOnSheet,
-} from '../services/ConfigSheetSyncService';
 import { DeviceIcon } from './DeviceIcons';
 import {
   Plus, Pencil, Trash2, Home, Layers, ChevronRight,
-  Server, Monitor, HardDrive, Network, Sun, Moon,
+  Server, Monitor, HardDrive, Network,
   Camera, MonitorSpeaker, Radio, Eye, EyeOff, ChevronDown, Shapes,
 } from 'lucide-react';
 
@@ -68,12 +61,9 @@ const SERVER_TYPES = [
   { id: 'other', name: 'Other' },
 ];
 
-const OS_OPTIONS = [
-  'Windows Server 2022', 'Windows Server 2019', 'Windows 11', 'Windows 10', 'Ubuntu 22.04', 'Ubuntu 20.04',
-];
+const OS_OPTIONS = ['Linux', 'Ubuntu', 'Windows'];
 
-const RAM_OPTIONS = ['8 GB', '16 GB', '32 GB', '64 GB', '128 GB'];
-const SSD_OPTIONS = ['256 GB', '512 GB', '1 TB', '2 TB', '4 TB'];
+const MODEL_OPTIONS = ['FLIv2', 'FLIv2 Edge'];
 
 const DEFAULT_PORT = { mac: '', ip: '', dhcp: false };
 
@@ -84,8 +74,8 @@ function hasLocationFields(location) {
 }
 
 /** Prefer site fields; otherwise use normalized customer.config location. */
-function effectiveLocation(garage, customer) {
-  if (hasLocationFields(garage)) return garage;
+function effectiveLocation(site, customer) {
+  if (hasLocationFields(site)) return site;
   return customerLocationFields(customer);
 }
 
@@ -177,20 +167,20 @@ const CAMERA_TYPES_SET = new Set(['cam-fli', 'cam-lpr', 'cam-people']);
 function isCameraType(t) { return CAMERA_TYPES_SET.has(t); }
 
 export default function LevelSelector() {
-  const garage = useCurrentGarage();
+  const site = useCurrentSite();
   const currentCustomer = useCurrentCustomer();
-  const garages = useCustomerGarages();
-  const { setGarages, setLevels, selectLevel, goHome, mode, toggleMode } = useAppStore();
+  const sites = useCustomerSites();
+  const { setSites, setLevels, selectLevel, goHome } = useAppStore();
 
-  const siteLocation = effectiveLocation(garage, currentCustomer);
+  const siteLocation = effectiveLocation(site, currentCustomer);
   const siteAddress = formatSiteAddress(siteLocation);
 
-  const levels = useMemo(() => garage?.levels || [], [garage?.levels]);
-  const servers = useMemo(() => garage?.servers || [], [garage?.servers]);
+  const levels = useMemo(() => site?.levels || [], [site?.levels]);
+  const servers = useMemo(() => site?.servers || [], [site?.servers]);
   const floorLevelList = useMemo(() => floorLevels(levels), [levels]);
   const zoneLevelList = useMemo(() => zoneLevels(levels), [levels]);
-  const displayGroups = garage?.displayGroups || [];
-  const sensorGroups = garage?.sensorGroups || [];
+  const displayGroups = site?.displayGroups || [];
+  const sensorGroups = site?.sensorGroups || [];
 
   const [showLevelModal, setShowLevelModal] = useState(false);
   const [editLevel, setEditLevel] = useState(null);
@@ -214,8 +204,8 @@ export default function LevelSelector() {
   const [editServer, setEditServer] = useState(null);
   const [showSplashtopPw, setShowSplashtopPw] = useState(false);
   const [serverForm, setServerForm] = useState({
-    name: '', type: 'epic', os: 'Windows Server 2022',
-    ram: '', ssd: '',
+    name: '', type: 'epic', os: 'Windows',
+    model: '',
     ports: [{ ...DEFAULT_PORT }],
     splashtopUser: 'Administrator', splashtopPassword: '', splashtopUrl: '',
     notes: '',
@@ -245,7 +235,6 @@ export default function LevelSelector() {
   }, [bulkCounts]);
 
   const buildBulkDevices = useCallback((existingDevices, namingLevel) => {
-    const startId = existingDevices.length > 0 ? Math.max(...existingDevices.map(d => d.id || 0)) + 1 : 1;
     const out = [];
     const usedNames = new Set(existingDevices.map(d => d.name));
     BULK_CATEGORIES.forEach(cat => {
@@ -267,7 +256,7 @@ export default function LevelSelector() {
             name = buildName(n);
           }
           usedNames.add(name);
-          out.push({ id: startId + out.length, ...makeBulkDevice(it.type, it.prefix, name) });
+          out.push({ id: crypto.randomUUID(), ...makeBulkDevice(it.type, it.prefix, name) });
           n++;
         }
       });
@@ -276,9 +265,16 @@ export default function LevelSelector() {
   }, [bulkCounts]);
 
   const handleSaveLevel = useCallback(async () => {
-    if (!levelForm.name.trim() || savingLevel || !garage) return;
+    if (!levelForm.name.trim() || savingLevel || !site) return;
     if (levelForm.isZone && levelForm.parentLevelId == null) {
       setLevelSyncError('Pick a parent level for this zone.');
+      return;
+    }
+    if (
+      levelForm.isZone
+      && isDuplicateZoneName(levelForm.name, levelForm.parentLevelId, levels, editLevel?.id ?? null)
+    ) {
+      setLevelSyncError(`A zone named "${levelForm.name.trim()}" already exists on this level.`);
       return;
     }
     setLevelSyncError('');
@@ -334,7 +330,7 @@ export default function LevelSelector() {
         nextLevels = removeLinkedZonePolygons(nextLevels, editLevel.id);
       }
     } else {
-      const newId = Math.max(0, ...levels.map(l => l.id)) + 1;
+      const newId = crypto.randomUUID();
       const ordinal = levels.length + 1;
       bulk = makingZone ? [] : buildBulkDevices([], ordinal);
       targetLevelId = newId;
@@ -365,80 +361,20 @@ export default function LevelSelector() {
       }
     }
 
-    const canSync = customerCanSyncToSheet(currentCustomer);
-    const cameraBulk = bulk.filter((d) => d.type?.startsWith('cam-'));
-    const signBulk = bulk.filter((d) => d.type?.startsWith('sign-'));
+    // Bulk-added sensors need a site sensor group — assign or create one
+    // locally (this used to happen inside the sheet-sync path). The store's
+    // debounced auto-save then persists the whole tree to Supabase.
     const sensorBulk = bulk.filter((d) => d.type?.startsWith('sensor-'));
-    const garageAfterSave = { ...garage, levels: nextLevels };
+    let siteAfterSave = { ...site, levels: nextLevels };
+    for (const device of sensorBulk) {
+      const targetLevel = (siteAfterSave.levels || []).find((l) => l.id === targetLevelId);
+      siteAfterSave = ensureDeviceSensorGroup(siteAfterSave, targetLevel, device).site;
+    }
 
-    setLevels(nextLevels);
-
-    if (canSync) {
-      try {
-        await syncGarageLevelsToSheet({
-          customer: currentCustomer,
-          garage: garageAfterSave,
-        });
-        const levelAfterSave = nextLevels.find((l) => l.id === targetLevelId);
-        if (levelAfterSave && (cameraBulk.length || signBulk.length || sensorBulk.length)) {
-          let syncedDevices = levelAfterSave.devices || [];
-          if (cameraBulk.length) {
-            syncedDevices = await syncBulkCamerasToSheet({
-              customer: currentCustomer,
-              garage: garageAfterSave,
-              level: levelAfterSave,
-              devices: syncedDevices,
-              servers,
-            });
-          }
-          if (signBulk.length) {
-            syncedDevices = await syncBulkSignsToSheet({
-              customer: currentCustomer,
-              garage: garageAfterSave,
-              level: levelAfterSave,
-              devices: syncedDevices,
-              servers,
-              displayGroups: garageAfterSave.displayGroups,
-              garages: garages.map((g) => (g.id === garage.id ? garageAfterSave : g)),
-            });
-          }
-          if (sensorBulk.length) {
-            const sensorResult = await syncBulkSensorsToSheet({
-              customer: currentCustomer,
-              garage: garageAfterSave,
-              level: { ...levelAfterSave, devices: syncedDevices },
-              devices: syncedDevices,
-            });
-            syncedDevices = sensorResult.devices;
-            if (sensorResult.garage) {
-              setGarages(garages.map((g) => (
-                g.id === sensorResult.garage.id
-                  ? {
-                    ...sensorResult.garage,
-                    levels: (sensorResult.garage.levels || []).map((l) => (
-                      l.id === targetLevelId ? { ...l, devices: syncedDevices } : l
-                    )),
-                  }
-                  : g
-              )));
-            } else {
-              setLevels(nextLevels.map((l) =>
-                l.id === targetLevelId ? { ...l, devices: syncedDevices } : l,
-              ));
-            }
-          } else {
-            setLevels(nextLevels.map((l) =>
-              l.id === targetLevelId ? { ...l, devices: syncedDevices } : l,
-            ));
-          }
-        }
-      } catch (err) {
-        setLevelSyncError(
-          err.message || 'Level saved locally. Google Sheet sync failed — try again in about a minute.',
-        );
-        setSavingLevel(false);
-        return;
-      }
+    if (sensorBulk.length) {
+      setSites(sites.map((s) => (s.id === site.id ? siteAfterSave : s)));
+    } else {
+      setLevels(nextLevels);
     }
 
     setShowLevelModal(false);
@@ -446,14 +382,13 @@ export default function LevelSelector() {
     setBulkCounts(makeEmptyBulkCounts());
     setExpandedCategory(null);
     setSavingLevel(false);
-  }, [levelForm, editLevel, levels, setLevels, setGarages, buildBulkDevices, garage, currentCustomer, savingLevel, servers, garages]);
+  }, [levelForm, editLevel, levels, setLevels, setSites, buildBulkDevices, site, savingLevel, sites]);
 
   const [confirmDelete, setConfirmDelete] = useState(null);
 
   const handleDeleteLevel = useCallback((id) => {
     const l = levels.find(level => level.id === id);
-    if (!l || !garage) return;
-    const kind = isZoneLevel(l) ? 'zone' : 'level';
+    if (!l || !site) return;
     setConfirmDelete({
       message: isZoneLevel(l)
         ? `Delete zone "${l?.name || ''}"? Its polygon on the parent floor will be removed.`
@@ -473,99 +408,78 @@ export default function LevelSelector() {
           }
         }
         setLevels(nextLevels);
-        const canSync = customerCanSyncToSheet(currentCustomer);
-        if (canSync) {
-          try {
-            await syncGarageLevelsToSheet({
-              customer: currentCustomer,
-              garage: { ...garage, levels: nextLevels },
-            });
-          } catch (err) {
-            setViewSyncError(
-              err.message || `${kind === 'zone' ? 'Zone' : 'Level'} removed locally. Google Sheet sync failed — try again in about a minute.`,
-            );
-          }
-        }
       },
     });
-  }, [levels, setLevels, garage, currentCustomer]);
+  }, [levels, setLevels, site]);
 
   const handleSaveServer = useCallback(async () => {
-    if (!serverForm.name.trim() || savingServer || !garage) return;
+    if (!serverForm.name.trim() || savingServer || !site) return;
+    const targetName = serverForm.name.trim().toLowerCase();
+    const isDuplicateServerName = (site.servers || []).some((sv) => (
+      sv.id !== editServer?.id && String(sv.name || '').trim().toLowerCase() === targetName
+    ));
+    if (isDuplicateServerName) {
+      setServerSyncError(`A server named "${serverForm.name.trim()}" already exists on this site.`);
+      return;
+    }
     setServerSyncError('');
     setViewSyncError('');
     setSavingServer(true);
 
-    const updatedGarages = garages.map(g => {
-      if (g.id !== garage.id) return g;
-      const srvs = g.servers || [];
+    const updatedSites = sites.map(s => {
+      if (s.id !== site.id) return s;
+      const srvs = s.servers || [];
       if (editServer) {
-        return { ...g, servers: srvs.map(s => s.id === editServer.id ? { ...s, ...serverForm } : s) };
+        return { ...s, servers: srvs.map(sv => sv.id === editServer.id ? { ...sv, ...serverForm } : sv) };
       }
-      const newId = Math.max(0, ...srvs.map(s => s.id || 0)) + 1;
-      return { ...g, servers: [...srvs, { id: newId, ...serverForm }] };
+      const newId = crypto.randomUUID();
+      return { ...s, servers: [...srvs, { id: newId, ...serverForm }] };
     });
-    const nextGarage = updatedGarages.find((g) => g.id === garage.id);
-    setGarages(updatedGarages);
-
-    const canSync = customerCanSyncToSheet(currentCustomer);
-    if (canSync && nextGarage) {
-      try {
-        await syncServersToSheet({ customer: currentCustomer, garage: nextGarage });
-      } catch (err) {
-        setServerSyncError(
-          err.message || 'Server saved locally. Google Sheet sync failed — try again in about a minute.',
-        );
-        setSavingServer(false);
-        return;
-      }
-    }
+    setSites(updatedSites);
 
     setShowServerModal(false);
     setEditServer(null);
     setSavingServer(false);
-  }, [serverForm, editServer, garage, garages, setGarages, currentCustomer, savingServer]);
+  }, [serverForm, editServer, site, sites, setSites, savingServer]);
 
   const handleDeleteServer = useCallback((id) => {
-    const s = (garage.servers || []).find(s => s.id === id);
+    const s = (site.servers || []).find(s => s.id === id);
     setConfirmDelete({
       message: `Delete server "${s?.name || ''}"?`,
       action: async () => {
-        const nextGarage = {
-          ...garage,
-          servers: (garage.servers || []).filter((srv) => srv.id !== id),
+        const nextSite = {
+          ...site,
+          servers: (site.servers || []).filter((srv) => srv.id !== id),
         };
-        setGarages(garages.map((g) => (g.id === garage.id ? nextGarage : g)));
-        const canSync = customerCanSyncToSheet(currentCustomer);
-        if (canSync) {
-          try {
-            await syncServersToSheet({ customer: currentCustomer, garage: nextGarage });
-          } catch (err) {
-            setViewSyncError(
-              err.message || 'Server removed locally. Google Sheet sync failed — try again in about a minute.',
-            );
-          }
-        }
+        setSites(sites.map((s) => (s.id === site.id ? nextSite : s)));
       },
     });
-  }, [garage, garages, setGarages, currentCustomer]);
+  }, [site, sites, setSites]);
 
-  const updateGarageGroups = useCallback((patch) => {
-    setGarages(garages.map((g) => (g.id === garage.id ? { ...g, ...patch } : g)));
-  }, [garage, garages, setGarages]);
+  const updateSiteGroups = useCallback((patch) => {
+    setSites(sites.map((s) => (s.id === site.id ? { ...s, ...patch } : s)));
+  }, [site, sites, setSites]);
 
   const handleSaveDisplayGroup = useCallback(async () => {
-    if (!displayGroupForm.name.trim() || !garage) return;
+    if (!displayGroupForm.name.trim() || !site) return;
+    const targetName = displayGroupForm.name.trim().toLowerCase();
+    const isDuplicateName = (site.displayGroups || []).some((g) => (
+      g.id !== editDisplayGroup?.id && String(g.name || '').trim().toLowerCase() === targetName
+    ));
+    if (isDuplicateName) {
+      setGroupSyncError(`A display group named "${displayGroupForm.name.trim()}" already exists on this site.`);
+      return;
+    }
     setGroupSyncError('');
 
-    const groups = garage.displayGroups || [];
+    const groups = site.displayGroups || [];
     let nextGroups;
     if (editDisplayGroup) {
       nextGroups = groups.map((g) => (
         g.id === editDisplayGroup.id ? { ...g, ...displayGroupForm } : g
       ));
     } else {
-      const newId = Math.max(0, ...groups.map((g) => g.id || 0)) + 1;
+      const newId = crypto.randomUUID();
       nextGroups = [...groups, defaultDisplayGroup(newId, displayGroupForm.name.trim())];
       const created = nextGroups[nextGroups.length - 1];
       Object.assign(created, {
@@ -574,78 +488,49 @@ export default function LevelSelector() {
       });
     }
 
-    const nextGarage = { ...garage, displayGroups: nextGroups };
-    const canSync = customerCanSyncToSheet(currentCustomer);
-    if (canSync) {
-      try {
-        await syncDisplayGroupsToSheet({
-          customer: currentCustomer,
-          garage: nextGarage,
-          garages: garages.map((gr) => (gr.id === nextGarage.id ? nextGarage : gr)),
-        });
-      } catch (err) {
-        setGroupSyncError(err.message || 'Failed to sync display groups to sheet.');
-        return;
-      }
-    }
-
-    updateGarageGroups({ displayGroups: nextGroups });
+    updateSiteGroups({ displayGroups: nextGroups });
     setShowDisplayGroupModal(false);
     setEditDisplayGroup(null);
-  }, [displayGroupForm, editDisplayGroup, garage, garages, currentCustomer, updateGarageGroups]);
+  }, [displayGroupForm, editDisplayGroup, site, updateSiteGroups]);
 
   const handleDeleteDisplayGroup = useCallback((id) => {
-    const g = (garage.displayGroups || []).find((grp) => grp.id === id);
+    const g = (site.displayGroups || []).find((grp) => grp.id === id);
     setConfirmDelete({
       message: `Delete display group "${g?.name || ''}"? Signs assigned to it will be unassigned.`,
       action: async () => {
-        const nextGroups = (garage.displayGroups || []).filter((grp) => grp.id !== id);
-        const nextLevels = (garage.levels || []).map((level) => ({
+        const nextGroups = (site.displayGroups || []).filter((grp) => grp.id !== id);
+        const nextLevels = (site.levels || []).map((level) => ({
           ...level,
           devices: (level.devices || []).map((d) => (
             d.displayGroupId === id ? { ...d, displayGroupId: null, displayGroupName: '' } : d
           )),
         }));
-        const nextGarage = { ...garage, displayGroups: nextGroups, levels: nextLevels };
-        setGarages(garages.map((gr) => (gr.id === garage.id ? nextGarage : gr)));
-        const canSync = customerCanSyncToSheet(currentCustomer);
-        if (canSync) {
-          try {
-            await syncDisplayGroupsToSheet({
-              customer: currentCustomer,
-              garage: nextGarage,
-              // Every site, so a group only this one had is removed rather
-              // than kept as an orphan row.
-              garages: garages.map((gr) => (gr.id === garage.id ? nextGarage : gr)),
-            });
-            await clearDisplayGroupFromSignsOnSheet({
-              customer: currentCustomer,
-              garage: nextGarage,
-              groupName: g?.name,
-              servers: nextGarage.servers || [],
-            });
-          } catch (err) {
-            setViewSyncError(
-              err.message || 'Display group removed locally. Google Sheet sync failed — try again in about a minute.',
-            );
-          }
-        }
+        const nextSite = { ...site, displayGroups: nextGroups, levels: nextLevels };
+        setSites(sites.map((s) => (s.id === site.id ? nextSite : s)));
       },
     });
-  }, [garage, garages, currentCustomer, setGarages]);
+  }, [site, sites, setSites]);
 
   const handleSaveSensorGroup = useCallback(async () => {
-    if (!sensorGroupForm.groupId.trim() || !garage) return;
+    if (!sensorGroupForm.groupId.trim() || !site) return;
+    const targetGroupId = sensorGroupForm.groupId.trim().toLowerCase();
+    const isDuplicateGroupId = (site.sensorGroups || []).some((g) => (
+      g.id !== editSensorGroup?.id && String(g.groupId || '').trim().toLowerCase() === targetGroupId
+    ));
+    if (isDuplicateGroupId) {
+      setGroupSyncError(`A sensor group named "${sensorGroupForm.groupId.trim()}" already exists on this site.`);
+      return;
+    }
     setGroupSyncError('');
 
-    const groups = garage.sensorGroups || [];
+    const groups = site.sensorGroups || [];
     let nextGroups;
     if (editSensorGroup) {
       nextGroups = groups.map((g) => (
         g.id === editSensorGroup.id ? { ...g, ...sensorGroupForm } : g
       ));
     } else {
-      const newId = Math.max(0, ...groups.map((g) => g.id || 0)) + 1;
+      const newId = crypto.randomUUID();
       nextGroups = [...groups, defaultSensorGroup(newId, sensorGroupForm.groupId.trim())];
       const created = nextGroups[nextGroups.length - 1];
       Object.assign(created, {
@@ -656,71 +541,40 @@ export default function LevelSelector() {
       });
     }
 
-    const nextGarage = { ...garage, sensorGroups: nextGroups };
-    const canSync = customerCanSyncToSheet(currentCustomer);
-    if (canSync) {
-      try {
-        await syncSensorGroupsToSheet({ customer: currentCustomer, garage: nextGarage });
-      } catch (err) {
-        setGroupSyncError(err.message || 'Failed to sync sensor groups to sheet.');
-        return;
-      }
-    }
-
-    updateGarageGroups({ sensorGroups: nextGroups });
+    updateSiteGroups({ sensorGroups: nextGroups });
     setShowSensorGroupModal(false);
     setEditSensorGroup(null);
-  }, [sensorGroupForm, editSensorGroup, garage, currentCustomer, updateGarageGroups]);
+  }, [sensorGroupForm, editSensorGroup, site, updateSiteGroups]);
 
   const handleDeleteSensorGroup = useCallback((id) => {
-    const g = (garage.sensorGroups || []).find((grp) => grp.id === id);
+    const g = (site.sensorGroups || []).find((grp) => grp.id === id);
     setConfirmDelete({
       message: `Delete sensor group "${g?.groupId || ''}"? Sensors assigned to it will be unassigned.`,
       action: async () => {
-        const nextGroups = (garage.sensorGroups || []).filter((grp) => grp.id !== id);
-        const nextLevels = (garage.levels || []).map((level) => ({
+        const nextGroups = (site.sensorGroups || []).filter((grp) => grp.id !== id);
+        const nextLevels = (site.levels || []).map((level) => ({
           ...level,
           devices: (level.devices || []).map((d) => (
             d.configSensorGroupId === id ? { ...d, configSensorGroupId: null } : d
           )),
         }));
-        const nextGarage = { ...garage, sensorGroups: nextGroups, levels: nextLevels };
-        setGarages(garages.map((gr) => (gr.id === garage.id ? nextGarage : gr)));
-        const canSync = customerCanSyncToSheet(currentCustomer);
-        if (canSync) {
-          try {
-            await syncSensorGroupsToSheet({ customer: currentCustomer, garage: nextGarage });
-            for (const level of nextLevels) {
-              const hasSensors = (level.devices || []).some((d) => d.type?.startsWith('sensor-'));
-              if (!hasSensors) continue;
-              await syncBulkSensorsToSheet({
-                customer: currentCustomer,
-                garage: nextGarage,
-                level,
-                devices: level.devices,
-              });
-            }
-          } catch (err) {
-            setViewSyncError(
-              err.message || 'Sensor group removed locally. Google Sheet sync failed — try again in about a minute.',
-            );
-          }
-        }
+        const nextSite = { ...site, sensorGroups: nextGroups, levels: nextLevels };
+        setSites(sites.map((s) => (s.id === site.id ? nextSite : s)));
       },
     });
-  }, [garage, garages, currentCustomer, setGarages]);
+  }, [site, sites, setSites]);
 
   const handleUpdateContacts = useCallback((contacts) => {
-    setGarages(garages.map(g => g.id === garage.id ? { ...g, contacts } : g));
-  }, [garage, garages, setGarages]);
+    setSites(sites.map(s => s.id === site.id ? { ...s, contacts } : s));
+  }, [site, sites, setSites]);
 
-  const totalDevices = useMemo(() => countGarageDevices(garage), [garage]);
+  const totalDevices = useMemo(() => countSiteDevices(site), [site]);
   const totalSpots = useMemo(
     () => floorLevelList.reduce((s, l) => s + (l.totalSpots || 0), 0),
     [floorLevelList],
   );
 
-  if (!garage) return null;
+  if (!site) return null;
 
   return (
     <div className="levels-page min-h-screen flex overflow-x-hidden overscroll-x-none bg-[#1d242c] text-white">
@@ -739,7 +593,7 @@ export default function LevelSelector() {
             <div>
               <div className="flex items-center gap-3">
                 <h1 className="text-[19px] font-extrabold tracking-[0.2px]">Levels</h1>
-                <span className="rounded border border-[#495057] bg-[#282e35] px-2.5 py-1 text-[10px] font-semibold text-[#adb5bd]">{garage?.name}</span>
+                <span className="rounded border border-[#495057] bg-[#282e35] px-2.5 py-1 text-[10px] font-semibold text-[#adb5bd]">{site?.name}</span>
                 {currentCustomer?.friendlyName && <span className="text-[10px] text-[#6c757d]">{currentCustomer.friendlyName}</span>}
               </div>
               {siteAddress && (
@@ -751,22 +605,14 @@ export default function LevelSelector() {
           </div>
           <div className="flex items-center gap-3">
             <ContactsSidebar
-              contacts={garage.contacts}
-              garageName={garage.name}
+              contacts={site.contacts}
+              siteName={site.name}
               onUpdateContacts={handleUpdateContacts}
             />
             <SetupSyncIndicator />
             {siteAddress && (
               <Weather address={siteAddress} />
             )}
-            <button
-              onClick={toggleMode}
-              className="p-1.5 rounded-md text-[#949494] hover:bg-[#282e35] hover:text-white cursor-pointer transition-colors"
-              title={mode === 'dark' ? 'Light mode' : 'Dark mode'}
-              aria-label={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            >
-              {mode === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </button>
           </div>
         </header>
 
@@ -840,6 +686,7 @@ export default function LevelSelector() {
                   setBulkCounts(makeEmptyBulkCounts());
                   setExpandedCategory(null);
                   setEditLevel(null);
+                  setLevelSyncError('');
                   setShowLevelModal(true);
                 }}>
                   <Plus className="w-4 h-4" /> Add Level
@@ -913,6 +760,7 @@ export default function LevelSelector() {
                                 setBulkCounts(makeEmptyBulkCounts());
                                 setExpandedCategory(null);
                                 setEditLevel(level);
+                                setLevelSyncError('');
                                 setShowLevelModal(true);
                               }} className="p-1.5 rounded-md text-[#949494] hover:bg-[#1d242c] hover:text-white cursor-pointer">
                                 <Pencil className="w-3.5 h-3.5" />
@@ -955,6 +803,7 @@ export default function LevelSelector() {
                     setBulkCounts(makeEmptyBulkCounts());
                     setExpandedCategory(null);
                     setEditLevel(null);
+                    setLevelSyncError('');
                     setShowLevelModal(true);
                   }}
                 >
@@ -1027,6 +876,7 @@ export default function LevelSelector() {
                                     setBulkCounts(makeEmptyBulkCounts());
                                     setExpandedCategory(null);
                                     setEditLevel(level);
+                                    setLevelSyncError('');
                                     setShowLevelModal(true);
                                   }}
                                   className="p-1.5 rounded-md text-[#949494] hover:bg-[#1d242c] hover:text-white cursor-pointer"
@@ -1063,9 +913,10 @@ export default function LevelSelector() {
             <TabsContent value="servers">
               <div className="flex justify-end mb-4">
                 <Button className="h-[30px] rounded-[5px] bg-white px-4 text-[11px] font-bold text-[#151c23] hover:bg-[#e9ecef]" onClick={() => {
-                  setServerForm({ name: '', type: 'epic', os: 'Windows Server 2022', ram: '', ssd: '', ports: [{ ...DEFAULT_PORT }], splashtopUser: 'Administrator', splashtopPassword: '', splashtopUrl: '', notes: '' });
+                  setServerForm({ name: '', type: 'epic', os: 'Windows', model: '', ports: [{ ...DEFAULT_PORT }], splashtopUser: 'Administrator', splashtopPassword: '', splashtopUrl: '', notes: '' });
                   setEditServer(null);
                   setShowSplashtopPw(false);
+                  setServerSyncError('');
                   setShowServerModal(true);
                 }}>
                   <Plus className="w-4 h-4" /> Add Server
@@ -1099,13 +950,16 @@ export default function LevelSelector() {
                               <button onClick={() => {
                                 const formData = {
                                   ...server,
-                                  ports: server.ports || [{ mac: server.macAddress || '', ip: server.ipAddress || '', dhcp: false }],
+                                  ports: server.ports?.length
+                                    ? server.ports
+                                    : [{ mac: server.macAddress || '', ip: server.ipAddress || '', dhcp: false }],
                                   splashtopUser: server.splashtopUser || 'Administrator',
                                   splashtopUrl: server.splashtopUrl || '',
                                 };
                                 setServerForm(formData);
                                 setEditServer(server);
                                 setShowSplashtopPw(false);
+                                setServerSyncError('');
                                 setShowServerModal(true);
                               }} className="p-1.5 rounded-md text-[#949494] hover:bg-[#1d242c] hover:text-white cursor-pointer">
                                 <Pencil className="w-3.5 h-3.5" />
@@ -1130,14 +984,10 @@ export default function LevelSelector() {
                               <span>{server.os}</span>
                             </div>
                           )}
-                          {(server.ram || server.ssd) && (
-                            <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                              {server.ram && (
-                                <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" /> {server.ram} RAM</span>
-                              )}
-                              {server.ssd && (
-                                <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" /> {server.ssd} SSD</span>
-                              )}
+                          {server.model && (
+                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
+                              <HardDrive className="w-3 h-3" />
+                              <span>{server.model}</span>
                             </div>
                           )}
                         </CardContent>
@@ -1658,12 +1508,18 @@ export default function LevelSelector() {
             </div>
             <div>
               <Label>Parent Level</Label>
-              <Input
-                value={sensorGroupForm.parentLevel}
-                onChange={(e) => setSensorGroupForm((f) => ({ ...f, parentLevel: e.target.value }))}
-                placeholder="Optional"
-                className="mt-1.5"
-              />
+              <Select
+                value={sensorGroupForm.parentLevel || 'none'}
+                onValueChange={(v) => setSensorGroupForm((f) => ({ ...f, parentLevel: v === 'none' ? '' : v }))}
+              >
+                <SelectTrigger className="mt-1.5"><SelectValue placeholder="Optional" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {floorLevelList.map((l) => (
+                    <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
           {groupSyncError && (
@@ -1702,32 +1558,23 @@ export default function LevelSelector() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <Label>RAM</Label>
-                  <Select value={serverForm.ram || ''} onValueChange={v => setServerForm(f => ({ ...f, ram: v }))}>
-                    <SelectTrigger className="mt-1.5"><SelectValue placeholder="Select RAM..." /></SelectTrigger>
+                  <Label>Model</Label>
+                  <Select value={serverForm.model || ''} onValueChange={v => setServerForm(f => ({ ...f, model: v }))}>
+                    <SelectTrigger className="mt-1.5"><SelectValue placeholder="Select model..." /></SelectTrigger>
                     <SelectContent>
-                      {RAM_OPTIONS.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                      {MODEL_OPTIONS.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
                 <div>
-                  <Label>SSD</Label>
-                  <Select value={serverForm.ssd || ''} onValueChange={v => setServerForm(f => ({ ...f, ssd: v }))}>
-                    <SelectTrigger className="mt-1.5"><SelectValue placeholder="Select SSD..." /></SelectTrigger>
+                  <Label>Operating System</Label>
+                  <Select value={serverForm.os} onValueChange={v => setServerForm(f => ({ ...f, os: v }))}>
+                    <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      {SSD_OPTIONS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                      {OS_OPTIONS.map(os => <SelectItem key={os} value={os}>{os}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
-              </div>
-              <div>
-                <Label>Operating System</Label>
-                <Select value={serverForm.os} onValueChange={v => setServerForm(f => ({ ...f, os: v }))}>
-                  <SelectTrigger className="mt-1.5"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {OS_OPTIONS.map(os => <SelectItem key={os} value={os}>{os}</SelectItem>)}
-                  </SelectContent>
-                </Select>
               </div>
             </TabsContent>
 
@@ -1884,7 +1731,7 @@ export default function LevelSelector() {
                   await confirmDelete?.action();
                   setConfirmDelete(null);
                 } catch (err) {
-                  setViewSyncError(err.message || 'Failed to sync delete to Google Sheet.');
+                  setViewSyncError(err.message || 'Delete failed. Try again.');
                   setConfirmDelete(null);
                 }
               }}

@@ -183,17 +183,16 @@ export function mapsOpenUrl(mapsUrl, addressQuery) {
   return null;
 }
 
-function garageMergeKey(name) {
+function siteMergeKey(name) {
   const key = String(name || '').trim().toLowerCase();
   return key || null;
 }
 
-function nextGarageId(garages) {
-  const numericIds = garages.map((g) => Number(g.id)).filter((n) => Number.isFinite(n));
-  return numericIds.length ? Math.max(...numericIds) + 1 : 1;
+function nextSiteId() {
+  return crypto.randomUUID();
 }
 
-function mergeGarageRecord(existing, imported) {
+function mergeSiteRecord(existing, imported) {
   return {
     ...imported,
     id: existing.id,
@@ -206,29 +205,29 @@ function mergeGarageRecord(existing, imported) {
 }
 
 /**
- * Merge imported garages into existing customer garages by site name.
+ * Merge imported sites into existing customer sites by site name.
  * Sites without a name are always added as new entries (never merged).
  */
-export function mergeGarages(existingGarages, importedGarages) {
-  const result = [...existingGarages];
+export function mergeSites(existingSites, importedSites) {
+  const result = [...existingSites];
   const byName = new Map();
-  result.forEach((g) => {
-    const key = garageMergeKey(g.name);
-    if (key) byName.set(key, g);
+  result.forEach((s) => {
+    const key = siteMergeKey(s.name);
+    if (key) byName.set(key, s);
   });
 
-  importedGarages.forEach((imported) => {
-    const key = garageMergeKey(imported.name);
+  importedSites.forEach((imported) => {
+    const key = siteMergeKey(imported.name);
     if (!key) {
-      result.push({ ...imported, id: nextGarageId(result) });
+      result.push({ ...imported, id: nextSiteId(result) });
       return;
     }
     const match = byName.get(key);
     if (match) {
-      const idx = result.findIndex((g) => g.id === match.id);
-      result[idx] = mergeGarageRecord(match, imported);
+      const idx = result.findIndex((s) => s.id === match.id);
+      result[idx] = mergeSiteRecord(match, imported);
     } else {
-      const added = { ...imported, id: nextGarageId(result) };
+      const added = { ...imported, id: nextSiteId(result) };
       result.push(added);
       byName.set(key, added);
     }

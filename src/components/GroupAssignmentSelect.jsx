@@ -11,7 +11,7 @@ import { Plus } from 'lucide-react';
 const ADD_NEW_VALUE = '__add_new__';
 
 /**
- * Dropdown to assign a device to a garage-level group (display or sensor).
+ * Dropdown to assign a device to a site-level group (display or sensor).
  * Mirrors server assignment: select existing or add a new group.
  */
 export default function GroupAssignmentSelect({
@@ -25,6 +25,7 @@ export default function GroupAssignmentSelect({
   onAddGroup,
   noneLabel = 'No group',
   addDialogTitle = 'Add Group',
+  addDialogDescription = 'Groups batch device updates so signs or sensors are not all polled at once.',
   addNameLabel = 'Group name',
   addPlaceholder = 'e.g. Group1',
 }) {
@@ -40,7 +41,7 @@ export default function GroupAssignmentSelect({
       setShowAdd(true);
       return;
     }
-    onChange(v === 'none' ? null : Number(v));
+    onChange(v === 'none' ? null : v);
   }, [onChange]);
 
   const handleAdd = useCallback(async () => {
@@ -104,9 +105,7 @@ export default function GroupAssignmentSelect({
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>{addDialogTitle}</DialogTitle>
-            <DialogDescription>
-              Groups batch device updates so signs or sensors are not all polled at once.
-            </DialogDescription>
+            <DialogDescription>{addDialogDescription}</DialogDescription>
           </DialogHeader>
           <div>
             <Label>{addNameLabel}</Label>

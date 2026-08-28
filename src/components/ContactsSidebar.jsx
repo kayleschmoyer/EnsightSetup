@@ -82,7 +82,7 @@ function ContactCard({ contact, onEdit, onDelete }) {
   );
 }
 
-export default function ContactsSidebar({ contacts, garageName, onUpdateContacts }) {
+export default function ContactsSidebar({ contacts, siteName, onUpdateContacts }) {
   const [isOpen, setIsOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -120,7 +120,7 @@ export default function ContactsSidebar({ contacts, garageName, onUpdateContacts
         type="button"
         onClick={() => setIsOpen(true)}
         className="flex h-7 items-center gap-2 rounded-[5px] border border-[#495057] bg-transparent px-3 text-[11px] font-semibold text-white transition-colors hover:bg-[#282e35]"
-        title={`Contacts for ${garageName}`}
+        title={`Contacts for ${siteName}`}
       >
         <Users className="h-3.5 w-3.5 text-[#49b6d6]" />
         Contacts
@@ -137,7 +137,7 @@ export default function ContactsSidebar({ contacts, garageName, onUpdateContacts
             <div className="flex items-center justify-between gap-4 pr-6">
               <div>
                 <DialogTitle className="flex items-center gap-2"><Users className="h-4 w-4 text-[#49b6d6]" /> Contacts</DialogTitle>
-                <DialogDescription className="mt-1 text-[#949494]">{garageName} · {safeContacts.length} contact{safeContacts.length === 1 ? '' : 's'}</DialogDescription>
+                <DialogDescription className="mt-1 text-[#949494]">{siteName} · {safeContacts.length} contact{safeContacts.length === 1 ? '' : 's'}</DialogDescription>
               </div>
               <Button
                 type="button"

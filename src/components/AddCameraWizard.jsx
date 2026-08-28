@@ -130,8 +130,8 @@ export default function AddCameraWizard({
   const comingFromOptions = useMemo(() => {
     const opts = [
       { id: 'street', label: 'Street' },
-      { id: 'garage-entry', label: 'Garage Entry' },
-      { id: 'garage-exit', label: 'Garage Exit' },
+      { id: 'site-entry', label: 'Site Entry' },
+      { id: 'site-exit', label: 'Site Exit' },
     ];
     levels.forEach(l => {
       if (l.id !== currentLevel?.id) {
@@ -709,7 +709,7 @@ export default function AddCameraWizard({
                     </Label>
                     <Select
                       value={form.serverId?.toString() || 'none'}
-                      onValueChange={v => setForm(f => ({ ...f, serverId: v === 'none' ? null : Number(v) }))}
+                      onValueChange={v => setForm(f => ({ ...f, serverId: v === 'none' ? null : v }))}
                     >
                       <SelectTrigger className="mt-1.5">
                         <SelectValue placeholder="No server assigned" />

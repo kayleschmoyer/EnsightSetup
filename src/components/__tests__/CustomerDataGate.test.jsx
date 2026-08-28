@@ -29,7 +29,7 @@ const layout = vi.hoisted(() => {
       customer: {
         friendlyName: customer.friendlyName,
         config: customer.config,
-        garages: customer.garages,
+        sites: customer.sites,
       },
     })),
     setupContentHash: vi.fn(() => 'hash'),
@@ -49,7 +49,7 @@ const sync = vi.hoisted(() => ({
 const drive = vi.hoisted(() => ({ downloadConfigFile: vi.fn(async () => new ArrayBuffer(8)) }));
 const parser = vi.hoisted(() => ({
   parseExcelFile: vi.fn(() => ({
-    garages: [{ id: 7, name: 'Rebuilt', internalName: 'Rebuilt', levels: [], quickLinks: [] }],
+    sites: [{ id: 7, name: 'Rebuilt', internalName: 'Rebuilt', levels: [], quickLinks: [] }],
   })),
 }));
 
@@ -69,7 +69,7 @@ const customer = (over = {}) => ({
   friendlyName: 'Acme',
   spreadsheetId: 'sheet-1',
   config: {},
-  garages: null,
+  sites: null,
   ...over,
 });
 
@@ -77,7 +77,7 @@ function setStore({ customers = [customer()], hydration = {}, setupSync = {} } =
   useAppStore.setState({
     customers,
     selectedCustomerId: 1,
-    selectedGarageId: null,
+    selectedSiteId: null,
     selectedLevelId: null,
     currentView: 'editor',
     hydration,
@@ -87,7 +87,7 @@ function setStore({ customers = [customer()], hydration = {}, setupSync = {} } =
 }
 
 const shown = () => screen.queryByTestId('editor');
-const localGarages = () => useAppStore.getState().customers[0].garages?.map((g) => g.name) ?? null;
+const localSites = () => useAppStore.getState().customers[0].sites?.map((s) => s.name) ?? null;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -139,7 +139,7 @@ describe('when the layout has not been read', () => {
   });
 
   it('blocks before the read has even started', () => {
-    // Unknown is not the same as absent. Rendering here would show `garages:
+    // Unknown is not the same as absent. Rendering here would show `sites:
     // null` as an empty layout, which is the state that used to get saved.
     setStore({ hydration: {} });
     render(<CustomerDataGate>{CHILD}</CustomerDataGate>);
@@ -179,7 +179,7 @@ describe('when the layout has not been read', () => {
 // ── XLSX-ONLY ───────────────────────────────────────────────────────────────
 describe('a customer linked to an .xlsx but no Google Sheet', () => {
   beforeEach(() => setStore({
-    customers: [customer({ spreadsheetId: null, sourceFileId: 'xlsx-1', garages: [] })],
+    customers: [customer({ spreadsheetId: null, sourceFileId: 'xlsx-1', sites: [] })],
   }));
 
   it('blocks editing, because nothing would be saved', () => {
@@ -206,7 +206,7 @@ describe('Try again', () => {
       customer: {
         friendlyName: 'Acme',
         config: {},
-        garages: [{ id: 3, name: 'North', internalName: 'North', levels: [], quickLinks: [] }],
+        sites: [{ id: 3, name: 'North', internalName: 'North', levels: [], quickLinks: [] }],
       },
     });
     setStore({ hydration: { 1: 'failed' } });
@@ -215,7 +215,7 @@ describe('Try again', () => {
     await user.click(screen.getByRole('button', { name: /try again/i }));
 
     await waitFor(() => expect(shown()).toBeTruthy());
-    expect(localGarages()).toEqual(['North']);
+    expect(localSites()).toEqual(['North']);
   });
 
   it('stays blocked when the read fails again', async () => {
@@ -285,7 +285,7 @@ describe('a SetupJson tab that will never parse', () => {
 
     await user.click(screen.getByRole('button', { name: /rebuild from config tabs/i }));
 
-    await waitFor(() => expect(localGarages()).toEqual(['Rebuilt']));
+    await waitFor(() => expect(localSites()).toEqual(['Rebuilt']));
     await waitFor(() => expect(shown()).toBeTruthy());
     confirm.mockRestore();
   });
@@ -299,7 +299,7 @@ describe('a SetupJson tab that will never parse', () => {
     await user.click(screen.getByRole('button', { name: /rebuild from config tabs/i }));
 
     await waitFor(() => expect(layout.writeSetupJsonToSpreadsheet).toHaveBeenCalled());
-    expect(layout.__setupJson.get('sheet-1')?.customer.garages.map((g) => g.name))
+    expect(layout.__setupJson.get('sheet-1')?.customer.sites.map((s) => s.name))
       .toEqual(['Rebuilt']);
     confirm.mockRestore();
   });

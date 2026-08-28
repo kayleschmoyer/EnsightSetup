@@ -85,7 +85,7 @@ describe('local matching / orphans', () => {
   it('round-trips shared catalog metadata through appProperties', () => {
     const customer = {
       config: { support: { enterpriseSite: true, support24Hour: false } },
-      garages: [
+      sites: [
         { levels: [{ devices: [{}, {}] }, { devices: [{}] }] },
       ],
     };

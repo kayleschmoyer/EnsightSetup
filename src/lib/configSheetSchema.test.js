@@ -6,14 +6,14 @@ import {
   buildNetworkingSheetRow,
   ensureDeviceSensorGroup,
   sensorGroupIdForDevice,
-  applyServersToGarages,
-  mergeGaragesPreferNetworkingServers,
+  applyServersToSites,
+  mergeSitesPreferNetworkingServers,
   pruneUnusedSensorGroups,
   pruneUnusedDisplayGroups,
 } from './configSheetSchema';
 
 describe('buildDisplayLevelSheetRows', () => {
-  const garages = [{
+  const sites = [{
     id: 1,
     name: 'East Central',
     levels: [
@@ -27,9 +27,9 @@ describe('buildDisplayLevelSheetRows', () => {
     const rows = buildDisplayLevelSheetRows({
       type: 'sign-led',
       friendlyName: 'B2 Ramp Sign',
-      displayGarageId: 1,
+      displaySiteId: 1,
       displayLevelIds: [1, 2, 3],
-    }, garages);
+    }, sites);
 
     expect(rows).toHaveLength(1);
     expect(rows[0][2]).toBe('Level B1,Level P1,Level P2');
@@ -39,9 +39,9 @@ describe('buildDisplayLevelSheetRows', () => {
     const rows = buildDisplayLevelSheetRows({
       type: 'sign-led',
       friendlyName: 'P1 Entry',
-      displayGarageId: 1,
+      displaySiteId: 1,
       displayLevelIds: [2],
-    }, garages);
+    }, sites);
 
     expect(rows).toHaveLength(1);
     expect(rows[0][2]).toBe('Level P1');
@@ -149,29 +149,29 @@ describe('buildNetworkingSheetRow', () => {
 
 describe('ensureDeviceSensorGroup', () => {
   it('creates a protocol group and assigns configSensorGroupId', () => {
-    const garage = {
+    const site = {
       id: 1,
       name: 'Site',
       sensorGroups: [],
       levels: [{ id: 1, name: 'L1', devices: [] }],
     };
     const device = { id: 9, type: 'sensor-nwave', name: '1.1NW' };
-    const { device: nextDevice, garage: nextGarage } = ensureDeviceSensorGroup(
-      garage,
-      garage.levels[0],
+    const { device: nextDevice, site: nextSite } = ensureDeviceSensorGroup(
+      site,
+      site.levels[0],
       device,
     );
 
-    expect(nextDevice.configSensorGroupId).toBe(1);
-    expect(nextGarage.sensorGroups).toHaveLength(1);
-    expect(nextGarage.sensorGroups[0].sensorProtocol).toBe('NWAVE');
-    expect(nextGarage.sensorGroups[0].groupId).toBe('NWAVE');
-    expect(sensorGroupIdForDevice(nextDevice, nextGarage.sensorGroups)).toBe('NWAVE');
-    expect(nextGarage.levels[0].devices[0].name).toBe('1.1NW');
+    expect(nextDevice.configSensorGroupId).toBe(nextSite.sensorGroups[0].id);
+    expect(nextSite.sensorGroups).toHaveLength(1);
+    expect(nextSite.sensorGroups[0].sensorProtocol).toBe('NWAVE');
+    expect(nextSite.sensorGroups[0].groupId).toBe('NWAVE');
+    expect(sensorGroupIdForDevice(nextDevice, nextSite.sensorGroups)).toBe('NWAVE');
+    expect(nextSite.levels[0].devices[0].name).toBe('1.1NW');
   });
 
   it('reuses an existing group with the same protocol', () => {
-    const garage = {
+    const site = {
       id: 1,
       name: 'Site',
       sensorGroups: [{
@@ -184,22 +184,22 @@ describe('ensureDeviceSensorGroup', () => {
       }],
       levels: [{ id: 1, name: 'L1', devices: [] }],
     };
-    const { device: nextDevice, garage: nextGarage } = ensureDeviceSensorGroup(
-      garage,
-      garage.levels[0],
+    const { device: nextDevice, site: nextSite } = ensureDeviceSensorGroup(
+      site,
+      site.levels[0],
       { id: 2, type: 'sensor-nwave', name: '1.2NW' },
     );
 
     expect(nextDevice.configSensorGroupId).toBe(4);
-    expect(nextGarage.sensorGroups).toHaveLength(1);
-    expect(sensorGroupIdForDevice(nextDevice, nextGarage.sensorGroups)).toBe('ExistingNW');
+    expect(nextSite.sensorGroups).toHaveLength(1);
+    expect(sensorGroupIdForDevice(nextDevice, nextSite.sensorGroups)).toBe('ExistingNW');
   });
 });
 
 describe('networking servers merge', () => {
-  it('applies Networking servers onto every garage', () => {
+  it('applies Networking servers onto every site', () => {
     const servers = [{ id: 1, name: 'SRV-1', type: 'other', ports: [] }];
-    const next = applyServersToGarages(
+    const next = applyServersToSites(
       [{ id: 1, name: 'G1', servers: [] }, { id: 2, name: 'G2', servers: [{ id: 9, name: 'old' }] }],
       servers,
     );
@@ -210,20 +210,20 @@ describe('networking servers merge', () => {
   it('prefers tab servers over empty SetupJson servers', () => {
     const setup = [{ id: 1, name: 'G1', servers: [], levels: [] }];
     const tabs = [{ id: 1, name: 'G1', servers: [{ id: 1, name: 'FromNet', type: 'other', ports: [] }] }];
-    const merged = mergeGaragesPreferNetworkingServers(setup, tabs);
+    const merged = mergeSitesPreferNetworkingServers(setup, tabs);
     expect(merged[0].servers[0].name).toBe('FromNet');
   });
 
   it('keeps SetupJson servers when tabs have none', () => {
     const setup = [{ id: 1, name: 'G1', servers: [{ id: 1, name: 'FromSetup' }] }];
     const tabs = [{ id: 1, name: 'G1', servers: [] }];
-    expect(mergeGaragesPreferNetworkingServers(setup, tabs)[0].servers[0].name).toBe('FromSetup');
+    expect(mergeSitesPreferNetworkingServers(setup, tabs)[0].servers[0].name).toBe('FromSetup');
   });
 });
 
 describe('pruneUnused groups', () => {
   it('removes sensor groups no device references', () => {
-    const garage = {
+    const site = {
       sensorGroups: [
         { id: 1, groupId: 'Keep' },
         { id: 2, groupId: 'Orphan' },
@@ -233,12 +233,12 @@ describe('pruneUnused groups', () => {
         devices: [{ id: 10, type: 'sensor-nwave', configSensorGroupId: 1 }],
       }],
     };
-    const next = pruneUnusedSensorGroups(garage);
+    const next = pruneUnusedSensorGroups(site);
     expect(next.sensorGroups).toEqual([{ id: 1, groupId: 'Keep' }]);
   });
 
   it('removes display groups no sign references', () => {
-    const garage = {
+    const site = {
       displayGroups: [
         { id: 1, name: 'Keep' },
         { id: 2, name: 'Orphan' },
@@ -248,7 +248,7 @@ describe('pruneUnused groups', () => {
         devices: [{ id: 10, type: 'sign-led', displayGroupId: 1 }],
       }],
     };
-    const next = pruneUnusedDisplayGroups(garage);
+    const next = pruneUnusedDisplayGroups(site);
     expect(next.displayGroups).toEqual([{ id: 1, name: 'Keep' }]);
   });
 });

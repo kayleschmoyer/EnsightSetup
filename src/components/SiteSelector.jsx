@@ -1,16 +1,14 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { useAppStore, useCustomerGarages, useCurrentCustomer } from '../stores/useAppStore';
+import { useAppStore, useCustomerSites, useCurrentCustomer } from '../stores/useAppStore';
 import { mapsOpenUrl, safeExternalUrl, customerLocationFields, customerWeatherAddress, hasCustomerLocation } from '../lib/customerUtils';
 import {
-  countGarageDevices,
-  countGarageDevicesByType,
-  countGaragesDevices,
-  countGaragesDevicesWithTypePrefix,
+  countSiteDevices,
+  countSiteDevicesByType,
+  countSitesDevices,
+  countSitesDevicesWithTypePrefix,
 } from '../lib/deviceCountUtils';
-import { customerCanSyncToSheet } from '../lib/customerConfigUtils';
 import { defaultLevelSheetConfig } from '../lib/configSheetSchema';
-import { syncGarageToSheet, deleteGarageFromSheet } from '../services/ConfigSheetSyncService';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -22,7 +20,7 @@ import Weather from './Weather';
 import SetupSyncIndicator from './SetupSyncIndicator';
 import { DeviceIcon } from './DeviceIcons';
 import {
-  Plus, Pencil, Trash2, Building2, MapPin, Home, Sun, Moon,
+  Plus, Pencil, Trash2, Building2, MapPin, Home,
   ExternalLink, Link2, Globe, ChevronRight, Search,
 } from 'lucide-react';
 
@@ -78,8 +76,8 @@ function hasLocationFields(location) {
 }
 
 /** Prefer site fields; otherwise use normalized customer.config location. */
-function effectiveLocation(garage, customer) {
-  if (hasLocationFields(garage)) return garage;
+function effectiveLocation(site, customer) {
+  if (hasLocationFields(site)) return site;
   return customerLocationFields(customer);
 }
 
@@ -104,54 +102,54 @@ function locationFieldsEqual(a, b) {
   return LOCATION_KEYS.every(k => String(a?.[k] || '').trim() === String(b?.[k] || '').trim());
 }
 
-export default function GarageSelector() {
-  const garages = useCustomerGarages();
+export default function SiteSelector() {
+  const sites = useCustomerSites();
   const currentCustomer = useCurrentCustomer();
-  const { setGarages, selectGarage, goHome, mode, toggleMode, selectedGarageId, setSelectedGarageId } = useAppStore();
+  const { setSites, selectSite, goHome, selectedSiteId, setSelectedSiteId } = useAppStore();
 
   const [showAddModal, setShowAddModal] = useState(false);
-  const [editGarage, setEditGarage] = useState(null);
+  const [editSite, setEditSite] = useState(null);
   const [form, setForm] = useState({ name: '', address: '', city: '', state: '', zip: '', mapsUrl: '' });
   // Location values the form was opened with, and whether they were inherited
   // from the customer (in which case unedited values are not baked onto the site).
   const [locationPrefill, setLocationPrefill] = useState(null);
 
   const [showLinkModal, setShowLinkModal] = useState(false);
-  const [linkForm, setLinkForm] = useState({ name: '', url: '', garageId: null, linkId: null });
+  const [linkForm, setLinkForm] = useState({ name: '', url: '', siteId: null, linkId: null });
 
   const [searchQuery, setSearchQuery] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(null);
-  const [savingGarage, setSavingGarage] = useState(false);
-  const [deletingGarage, setDeletingGarage] = useState(false);
-  const [garageSyncError, setGarageSyncError] = useState('');
+  const [savingSite, setSavingSite] = useState(false);
+  const [deletingSite, setDeletingSite] = useState(false);
+  const [siteSyncError, setSiteSyncError] = useState('');
 
-  const filteredGarages = useMemo(() => {
-    if (!searchQuery.trim()) return garages;
+  const filteredSites = useMemo(() => {
+    if (!searchQuery.trim()) return sites;
     const q = searchQuery.toLowerCase();
-    return garages.filter(g =>
-      g.name?.toLowerCase().includes(q) ||
-      g.address?.toLowerCase().includes(q) ||
-      g.city?.toLowerCase().includes(q) ||
-      g.state?.toLowerCase().includes(q) ||
-      String(g.zip || '').toLowerCase().includes(q) ||
-      (g.quickLinks || []).some(l =>
+    return sites.filter(s =>
+      s.name?.toLowerCase().includes(q) ||
+      s.address?.toLowerCase().includes(q) ||
+      s.city?.toLowerCase().includes(q) ||
+      s.state?.toLowerCase().includes(q) ||
+      String(s.zip || '').toLowerCase().includes(q) ||
+      (s.quickLinks || []).some(l =>
         l.name?.toLowerCase().includes(q) || l.url?.toLowerCase().includes(q)
       )
     );
-  }, [garages, searchQuery]);
+  }, [sites, searchQuery]);
 
-  const handleSaveGarage = useCallback(async () => {
-    if (!form.name.trim() || savingGarage) return;
-    setGarageSyncError('');
-    setSavingGarage(true);
+  const handleSaveSite = useCallback(async () => {
+    if (!form.name.trim() || savingSite) return;
+    setSiteSyncError('');
+    setSavingSite(true);
 
     const siteName = form.name.trim();
-    const duplicate = garages.some(
-      (g) => g.id !== editGarage?.id && siteNameKey(g.name) === siteNameKey(siteName),
+    const duplicate = sites.some(
+      (s) => s.id !== editSite?.id && siteNameKey(s.name) === siteNameKey(siteName),
     );
     if (duplicate) {
-      setGarageSyncError('A site with this name already exists.');
-      setSavingGarage(false);
+      setSiteSyncError('A site with this name already exists.');
+      setSavingSite(false);
       return;
     }
 
@@ -162,42 +160,35 @@ export default function GarageSelector() {
       ? { address: '', city: '', state: '', zip: '', mapsUrl: '' }
       : { address: form.address, city: form.city, state: form.state, zip: form.zip, mapsUrl: form.mapsUrl };
 
-    let nextGarage;
-    let previousGarage = null;
+    let nextSite;
 
-    if (editGarage) {
-      // Use the freshest copy of the garage — the store may have been
-      // rehydrated (e.g. SetupJson load) while the modal was open.
-      const baseGarage = garages.find(g => g.id === editGarage.id) || editGarage;
-      previousGarage = {
-        internalName: baseGarage.internalName,
-        name: baseGarage.name,
-      };
-      nextGarage = {
-        ...baseGarage,
+    if (editSite) {
+      // Use the freshest copy of the site — the store may have been
+      // rehydrated (e.g. a remote refresh) while the modal was open.
+      const baseSite = sites.find(s => s.id === editSite.id) || editSite;
+      nextSite = {
+        ...baseSite,
         ...locationFields,
         name: siteName,
         internalName: siteName,
       };
     } else {
-      const numericIds = garages.map(g => Number(g.id)).filter(n => Number.isFinite(n));
-      const newId = (numericIds.length ? Math.max(...numericIds) : 0) + 1;
-      nextGarage = {
-        id: newId,
+      nextSite = {
+        id: crypto.randomUUID(),
         ...locationFields,
         name: siteName,
         internalName: siteName,
         image: '',
-        quickLinks: currentCustomer?.spreadsheetUrl
-          ? [{ id: 1, name: currentCustomer.spreadsheetTitle || 'Configuration Sheet', url: currentCustomer.spreadsheetUrl, icon: 'sheets' }]
-          : [],
+        quickLinks: [],
         contacts: [],
         servers: [],
         displayGroups: [],
         sensorGroups: [],
         mdfIdfLocations: [],
         levels: [{
-          id: 1,
+          // Real uuid from the start — this id becomes the levels.id primary
+          // key when the debounced auto-save upserts the tree to Supabase.
+          id: crypto.randomUUID(),
           name: 'Level 1',
           internalName: 'Level 1',
           totalSpots: 0,
@@ -210,99 +201,67 @@ export default function GarageSelector() {
       };
     }
 
-    const canSync = customerCanSyncToSheet(currentCustomer);
-
-    if (editGarage) {
-      setGarages(prev => prev.map(g => g.id === editGarage.id ? nextGarage : g));
+    // The store's debounced auto-save persists this to Supabase (see
+    // saveCustomerSetup); save failures surface in the sync indicator
+    // with a retry, so there's no per-dialog remote call anymore.
+    if (editSite) {
+      setSites(prev => prev.map(s => s.id === editSite.id ? nextSite : s));
     } else {
-      setGarages(prev => [...prev, nextGarage]);
-    }
-
-    if (canSync) {
-      try {
-        await syncGarageToSheet({
-          customer: currentCustomer,
-          garage: nextGarage,
-          previousGarage,
-        });
-      } catch (err) {
-        if (!editGarage) {
-          // Roll back only the optimistic add so retry does not create
-          // duplicates — without clobbering unrelated concurrent changes.
-          setGarages(prev => prev.filter(g => g.id !== nextGarage.id));
-          setGarageSyncError(
-            err.message || 'Google Sheet sync failed. The site was not added — try again in about a minute.',
-          );
-        } else {
-          setGarageSyncError(
-            err.message || 'Site saved locally. Google Sheet sync failed — try again in about a minute.',
-          );
-        }
-        setSavingGarage(false);
-        return;
-      }
+      setSites(prev => [...prev, nextSite]);
     }
 
     setShowAddModal(false);
-    setGarageSyncError('');
-    setSavingGarage(false);
-  }, [form, editGarage, garages, setGarages, currentCustomer, savingGarage, locationPrefill]);
+    setSiteSyncError('');
+    setSavingSite(false);
+  }, [form, editSite, sites, setSites, savingSite, locationPrefill]);
 
-  const handleDeleteGarage = useCallback((id) => {
-    const g = garages.find(g => g.id === id);
-    if (!g) return;
+  const handleDeleteSite = useCallback((id) => {
+    const s = sites.find(s => s.id === id);
+    if (!s) return;
     setConfirmDelete({
-      message: `Delete site "${g?.name || ''}" and all its levels and devices?`,
-      action: async () => {
-        const canSync = customerCanSyncToSheet(currentCustomer);
-        if (canSync) {
-          await deleteGarageFromSheet({
-            customer: currentCustomer,
-            garage: g,
-            otherGarages: garages.filter(garage => garage.id !== id),
-          });
-        }
+      message: `Delete site "${s?.name || ''}" and all its levels and devices? This removes it from the shared database for everyone.`,
+      action: () => {
         // Functional update: the store may have changed while the confirm was open.
-        setGarages(prev => prev.filter(garage => garage.id !== id));
-        if (selectedGarageId === id) setSelectedGarageId(null);
+        setSites(prev => prev.filter(site => site.id !== id));
+        if (selectedSiteId === id) setSelectedSiteId(null);
       },
     });
-  }, [garages, setGarages, selectedGarageId, setSelectedGarageId, currentCustomer]);
+  }, [sites, setSites, selectedSiteId, setSelectedSiteId]);
 
   const handleSaveLink = useCallback(() => {
-    if (!linkForm.name.trim() || !linkForm.url.trim() || !linkForm.garageId) return;
+    if (!linkForm.name.trim() || !linkForm.url.trim() || !linkForm.siteId) return;
     const normalizedUrl = safeExternalUrl(linkForm.url, { allowHttp: true });
     if (!normalizedUrl) return;
-    setGarages(garages.map(g => {
-      if (g.id !== linkForm.garageId) return g;
-      const links = g.quickLinks || [];
+    setSites(sites.map(s => {
+      if (s.id !== linkForm.siteId) return s;
+      const links = s.quickLinks || [];
       if (linkForm.linkId) {
-        return { ...g, quickLinks: links.map(l => l.id === linkForm.linkId ? { ...l, name: linkForm.name, url: normalizedUrl } : l) };
+        return { ...s, quickLinks: links.map(l => l.id === linkForm.linkId ? { ...l, name: linkForm.name, url: normalizedUrl } : l) };
       }
       const numericLinkIds = links.map(l => Number(l.id)).filter(n => Number.isFinite(n));
       const newId = (numericLinkIds.length ? Math.max(...numericLinkIds) : 0) + 1;
-      return { ...g, quickLinks: [...links, { id: newId, name: linkForm.name, url: normalizedUrl, icon: 'link' }] };
+      return { ...s, quickLinks: [...links, { id: newId, name: linkForm.name, url: normalizedUrl, icon: 'link' }] };
     }));
     setShowLinkModal(false);
-    setLinkForm({ name: '', url: '', garageId: null, linkId: null });
-  }, [linkForm, garages, setGarages]);
+    setLinkForm({ name: '', url: '', siteId: null, linkId: null });
+  }, [linkForm, sites, setSites]);
 
-  const handleDeleteLink = useCallback((garageId, linkId) => {
+  const handleDeleteLink = useCallback((siteId, linkId) => {
     setConfirmDelete({ message: 'Delete this quick link?', action: () => {
       // Functional update: the store may have changed while the confirm was open.
-      setGarages(prev => prev.map(g => {
-        if (g.id !== garageId) return g;
-        return { ...g, quickLinks: (g.quickLinks || []).filter(l => l.id !== linkId) };
+      setSites(prev => prev.map(s => {
+        if (s.id !== siteId) return s;
+        return { ...s, quickLinks: (s.quickLinks || []).filter(l => l.id !== linkId) };
       }));
     }});
-  }, [setGarages]);
+  }, [setSites]);
 
-  const totalLevels = useMemo(() => garages.reduce((sum, g) => sum + (g.levels?.length || 0), 0), [garages]);
-  const totalDevices = useMemo(() => countGaragesDevices(garages), [garages]);
-  const totalSpots = useMemo(() => garages.reduce((sum, g) => sum + (g.levels ?? []).reduce((s, l) => s + (l.totalSpots || 0), 0), 0), [garages]);
-  const totalCameras = useMemo(() => countGaragesDevicesWithTypePrefix(garages, 'cam-'), [garages]);
-  const totalSigns = useMemo(() => countGaragesDevicesWithTypePrefix(garages, 'sign-'), [garages]);
-  const totalSensors = useMemo(() => countGaragesDevicesWithTypePrefix(garages, 'sensor-'), [garages]);
+  const totalLevels = useMemo(() => sites.reduce((sum, s) => sum + (s.levels?.length || 0), 0), [sites]);
+  const totalDevices = useMemo(() => countSitesDevices(sites), [sites]);
+  const totalSpots = useMemo(() => sites.reduce((sum, s) => sum + (s.levels ?? []).reduce((sp, l) => sp + (l.totalSpots || 0), 0), 0), [sites]);
+  const totalCameras = useMemo(() => countSitesDevicesWithTypePrefix(sites, 'cam-'), [sites]);
+  const totalSigns = useMemo(() => countSitesDevicesWithTypePrefix(sites, 'sign-'), [sites]);
+  const totalSensors = useMemo(() => countSitesDevicesWithTypePrefix(sites, 'sensor-'), [sites]);
 
   const customerAddress = useMemo(() => customerWeatherAddress(currentCustomer), [currentCustomer]);
   const customerWeatherAddr = customerAddress;
@@ -315,21 +274,21 @@ export default function GarageSelector() {
     return () => clearInterval(id);
   }, []);
   const customerLocalTime = useMemo(
-    () => getLocalTime(customerState || garages[0]?.state),
+    () => getLocalTime(customerState || sites[0]?.state),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [customerState, garages, clockTick],
+    [customerState, sites, clockTick],
   );
 
   const closeAddModal = useCallback(() => {
     setShowAddModal(false);
-    setGarageSyncError('');
+    setSiteSyncError('');
   }, []);
 
   const openAddSiteModal = useCallback(() => {
     setForm(emptySiteForm(currentCustomer));
     setLocationPrefill({ inherited: true, ...customerLocationFields(currentCustomer) });
-    setEditGarage(null);
-    setGarageSyncError('');
+    setEditSite(null);
+    setSiteSyncError('');
     setShowAddModal(true);
   }, [currentCustomer]);
 
@@ -337,7 +296,7 @@ export default function GarageSelector() {
     <div className="sites-page min-h-screen flex overflow-x-hidden overscroll-x-none bg-[#1d242c] text-white">
       {/*
         Contacts sidebar intentionally omitted on the multi-site list view.
-        Contacts are scoped per-garage and are shown after a site is selected.
+        Contacts are scoped per-site and are shown after a site is selected.
       */}
 
       <div className="flex-1 flex flex-col">
@@ -384,26 +343,17 @@ export default function GarageSelector() {
             {customerLocalTime && (
               <span className="text-[11px] text-[#949494]">{customerLocalTime}</span>
             )}
-
-            <button
-              onClick={toggleMode}
-              className="p-1.5 rounded-md text-[#949494] hover:bg-[#282e35] hover:text-white cursor-pointer transition-colors"
-              title={mode === 'dark' ? 'Light mode' : 'Dark mode'}
-              aria-label={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-            >
-              {mode === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </button>
           </div>
         </header>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-7 py-6">
-          {garageSyncError && !showAddModal && (
+          {siteSyncError && !showAddModal && (
             <div className="mb-4 max-w-4xl mx-auto flex items-start gap-3 p-3 rounded-xl border border-destructive/30 bg-destructive/5">
-              <p className="flex-1 text-sm text-destructive">{garageSyncError}</p>
+              <p className="flex-1 text-sm text-destructive">{siteSyncError}</p>
               <button
                 type="button"
-                onClick={() => setGarageSyncError('')}
+                onClick={() => setSiteSyncError('')}
                 className="text-xs text-muted-foreground hover:text-foreground cursor-pointer shrink-0"
               >
                 Dismiss
@@ -411,10 +361,10 @@ export default function GarageSelector() {
             </div>
           )}
 
-          {garages.length > 0 && (
+          {sites.length > 0 && (
             <section className="mb-5 flex flex-wrap items-center gap-y-2 border-y border-[#3a424b] bg-[#20272f]/45 px-1 py-2" aria-label="Site totals">
               {[
-                ['Sites', garages.length, '#49b6d6'],
+                ['Sites', sites.length, '#49b6d6'],
                 ['Levels', totalLevels, '#adb5bd'],
                 ['Spots', totalSpots, '#348fe2'],
                 ['Devices', totalDevices, '#ffffff'],
@@ -451,7 +401,7 @@ export default function GarageSelector() {
             </Button>
           </div>
 
-          {garages.length === 0 && hasCustomerLocation(currentCustomer) && (
+          {sites.length === 0 && hasCustomerLocation(currentCustomer) && (
             <div className="mb-6 max-w-2xl mx-auto">
               <Card className="border-primary/20">
                 <CardContent className="p-5">
@@ -483,7 +433,7 @@ export default function GarageSelector() {
             </div>
           )}
 
-          {garages.length > 0 && filteredGarages.length === 0 && (
+          {sites.length > 0 && filteredSites.length === 0 && (
             <div className="max-w-md mx-auto text-center py-12 mb-6">
               <Search className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
               <h2 className="text-base font-semibold mb-1">No matching sites</h2>
@@ -496,7 +446,7 @@ export default function GarageSelector() {
             </div>
           )}
 
-          {garages.length === 0 && (
+          {sites.length === 0 && (
             <div className="max-w-md mx-auto text-center py-12 mb-6">
               <Building2 className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
               <h2 className="text-base font-semibold mb-1">No sites yet</h2>
@@ -509,32 +459,32 @@ export default function GarageSelector() {
             </div>
           )}
 
-          {/* Garage Cards Grid */}
+          {/* Site Cards Grid */}
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             <AnimatePresence>
-              {filteredGarages.map((garage, i) => {
-                const location = effectiveLocation(garage, currentCustomer);
+              {filteredSites.map((site, i) => {
+                const location = effectiveLocation(site, currentCustomer);
                 const fullAddress = formatAddress(location);
-                const levels = garage.levels ?? [];
-                const deviceCount = countGarageDevices(garage);
+                const levels = site.levels ?? [];
+                const deviceCount = countSiteDevices(site);
                 const spotCount = levels.reduce((s, l) => s + (l.totalSpots || 0), 0);
-                const typeCounts = countGarageDevicesByType(garage);
+                const typeCounts = countSiteDevicesByType(site);
 
                 return (
                   <MotionDiv
-                    key={garage.id}
+                    key={site.id}
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95 }}
                     transition={{ delay: i * 0.05, duration: 0.3 }}
                   >
                     <Card className="group cursor-pointer overflow-hidden rounded-xl border-[#3a424b] bg-[#282e35] text-white shadow-[0_.125rem_.25rem_rgba(0,0,0,.3)] transition-all duration-200 hover:border-[#495057] hover:shadow-[0_.5rem_1rem_rgba(0,0,0,.35)]"
-                      onClick={() => selectGarage(garage.id)}
+                      onClick={() => selectSite(site.id)}
                     >
                       <CardContent className="p-4">
                         <div className="flex items-start justify-between mb-3">
                           <div className="flex-1">
-                            <h3 className="text-[15px] font-bold transition-colors group-hover:text-[#49b6d6]">{garage.name}</h3>
+                            <h3 className="text-[15px] font-bold transition-colors group-hover:text-[#49b6d6]">{site.name}</h3>
                             {fullAddress && (
                               <p className="mt-1 flex items-center gap-1 text-[10.5px] text-[#6c757d]">
                                 <MapPin className="w-3 h-3" />
@@ -552,8 +502,8 @@ export default function GarageSelector() {
                             <button
                               type="button"
                               onClick={() => {
-                                const inherited = !hasLocationFields(garage);
-                                const loc = effectiveLocation(garage, currentCustomer);
+                                const inherited = !hasLocationFields(site);
+                                const loc = effectiveLocation(site, currentCustomer);
                                 const locFields = {
                                   address: loc.address || '',
                                   city: loc.city || '',
@@ -561,23 +511,23 @@ export default function GarageSelector() {
                                   zip: loc.zip || '',
                                   mapsUrl: loc.mapsUrl || '',
                                 };
-                                setForm({ name: garage.name, ...locFields });
+                                setForm({ name: site.name, ...locFields });
                                 setLocationPrefill({ inherited, ...locFields });
-                                setEditGarage(garage);
-                                setGarageSyncError('');
+                                setEditSite(site);
+                                setSiteSyncError('');
                                 setShowAddModal(true);
                               }}
                               className="p-1.5 rounded-md text-[#949494] hover:bg-[#1d242c] hover:text-white cursor-pointer"
-                              aria-label={`Edit ${garage.name}`}
+                              aria-label={`Edit ${site.name}`}
                               title="Edit site"
                             >
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleDeleteGarage(garage.id)}
+                              onClick={() => handleDeleteSite(site.id)}
                               className="p-1.5 rounded-md hover:bg-[#ff5b57]/10 text-[#ff5b57] cursor-pointer"
-                              aria-label={`Delete ${garage.name}`}
+                              aria-label={`Delete ${site.name}`}
                               title="Delete site"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -631,9 +581,9 @@ export default function GarageSelector() {
                         )}
 
                         {/* Quick Links */}
-                        {(garage.quickLinks?.length > 0) && (
+                        {(site.quickLinks?.length > 0) && (
                           <div className="space-y-1 mb-3" onClick={e => e.stopPropagation()}>
-                            {garage.quickLinks.map(link => {
+                            {site.quickLinks.map(link => {
                               const linkHref = safeExternalUrl(link.url, { allowHttp: true });
                               return (
                               <div key={link.id} className="flex items-center gap-2 group/link">
@@ -665,7 +615,7 @@ export default function GarageSelector() {
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    setLinkForm({ name: link.name, url: link.url, garageId: garage.id, linkId: link.id });
+                                    setLinkForm({ name: link.name, url: link.url, siteId: site.id, linkId: link.id });
                                     setShowLinkModal(true);
                                   }}
                                   className="opacity-0 group-hover/link:opacity-100 focus:opacity-100 p-0.5 cursor-pointer"
@@ -675,7 +625,7 @@ export default function GarageSelector() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteLink(garage.id, link.id)}
+                                  onClick={() => handleDeleteLink(site.id, link.id)}
                                   className="opacity-0 group-hover/link:opacity-100 focus:opacity-100 p-0.5 cursor-pointer"
                                   aria-label={`Delete link ${link.name}`}
                                 >
@@ -692,7 +642,7 @@ export default function GarageSelector() {
                           <button
                             type="button"
                             onClick={() => {
-                              setLinkForm({ name: '', url: '', garageId: garage.id, linkId: null });
+                              setLinkForm({ name: '', url: '', siteId: site.id, linkId: null });
                               setShowLinkModal(true);
                             }}
                             className="flex cursor-pointer items-center gap-1 text-[10.5px] text-[#6c757d] hover:text-[#adb5bd]"
@@ -701,7 +651,7 @@ export default function GarageSelector() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => selectGarage(garage.id)}
+                            onClick={() => selectSite(site.id)}
                             className="flex cursor-pointer items-center gap-1 text-[11px] font-bold text-white transition-all hover:gap-2"
                           >
                             Open <ChevronRight className="w-3 h-3" />
@@ -717,21 +667,21 @@ export default function GarageSelector() {
         </div>
       </div>
 
-      {/* Add/Edit Garage Modal */}
+      {/* Add/Edit Site Modal */}
       <Dialog open={showAddModal} onOpenChange={(open) => {
-        if (savingGarage) return;
+        if (savingSite) return;
         if (open) setShowAddModal(true);
         else closeAddModal();
       }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{editGarage ? 'Edit Site' : 'Add New Site'}</DialogTitle>
+            <DialogTitle>{editSite ? 'Edit Site' : 'Add New Site'}</DialogTitle>
             <DialogDescription>Enter the site details below.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div>
               <Label>Site Name *</Label>
-              <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Main Parking Garage" className="mt-1.5" />
+              <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Main Site" className="mt-1.5" />
             </div>
             <div>
               <Label>Address</Label>
@@ -767,14 +717,14 @@ export default function GarageSelector() {
               />
               <p className="text-[10px] text-muted-foreground mt-1">Paste a Google Maps share link, or leave blank to use the address above.</p>
             </div>
-            {garageSyncError && (
-              <p className="text-sm text-destructive">{garageSyncError}</p>
+            {siteSyncError && (
+              <p className="text-sm text-destructive">{siteSyncError}</p>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={closeAddModal} disabled={savingGarage}>Cancel</Button>
-            <Button onClick={handleSaveGarage} disabled={!form.name.trim() || savingGarage}>
-              {savingGarage ? 'Saving...' : editGarage ? 'Save Changes' : 'Add Site'}
+            <Button variant="outline" onClick={closeAddModal} disabled={savingSite}>Cancel</Button>
+            <Button onClick={handleSaveSite} disabled={!form.name.trim() || savingSite}>
+              {savingSite ? 'Saving...' : editSite ? 'Save Changes' : 'Add Site'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -786,7 +736,7 @@ export default function GarageSelector() {
           <DialogHeader>
             <DialogTitle>{linkForm.linkId ? 'Edit Link' : 'Add Quick Link'}</DialogTitle>
             <DialogDescription>
-              Quick links are saved with the site setup (local / SetupJson), not a Google Sheet tab.
+              Quick links are saved with the site in the shared database.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -823,7 +773,7 @@ export default function GarageSelector() {
 
       {/* Delete Confirmation */}
       <Dialog open={!!confirmDelete} onOpenChange={(open) => {
-        if (!open && !deletingGarage) setConfirmDelete(null);
+        if (!open && !deletingSite) setConfirmDelete(null);
       }}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -831,24 +781,24 @@ export default function GarageSelector() {
             <DialogDescription>{confirmDelete?.message}</DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => setConfirmDelete(null)} disabled={deletingGarage}>Cancel</Button>
+            <Button variant="outline" onClick={() => setConfirmDelete(null)} disabled={deletingSite}>Cancel</Button>
             <Button
               variant="destructive"
-              disabled={deletingGarage}
+              disabled={deletingSite}
               onClick={async () => {
-                setDeletingGarage(true);
+                setDeletingSite(true);
                 try {
                   await confirmDelete?.action();
                   setConfirmDelete(null);
                 } catch (err) {
-                  setGarageSyncError(err.message || 'Failed to delete site from Google Sheet.');
+                  setSiteSyncError(err.message || 'Failed to delete site.');
                   setConfirmDelete(null);
                 } finally {
-                  setDeletingGarage(false);
+                  setDeletingSite(false);
                 }
               }}
             >
-              {deletingGarage ? 'Deleting...' : 'Delete'}
+              {deletingSite ? 'Deleting...' : 'Delete'}
             </Button>
           </DialogFooter>
         </DialogContent>

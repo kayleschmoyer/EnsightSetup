@@ -2,7 +2,7 @@
 export const ZONE_LEVEL_TYPE = 'Zone';
 
 /**
- * True when this garage level is a zone.
+ * True when this site level is a zone.
  * Zone identity lives on `isZone` / parentLevelId in SetupJson. GarageLevels
  * LevelType is FLI (same as floors) — older snapshots may still say Zone.
  */
@@ -40,6 +40,22 @@ export function nextZoneLevelName(parentLevel, levels = [], excludeLevelId = nul
     if (Number.isFinite(n) && n > max) max = n;
   }
   return `Zone ${max + 1}`;
+}
+
+/**
+ * True when another zone under the same parent floor already uses this name
+ * (case-insensitive, trimmed). Excludes `excludeLevelId` so editing a zone
+ * without renaming it doesn't collide with itself.
+ */
+export function isDuplicateZoneName(name, parentLevelId, levels = [], excludeLevelId = null) {
+  const target = String(name || '').trim().toLowerCase();
+  if (!target) return false;
+  return (levels || []).some((level) => {
+    if (excludeLevelId != null && level.id === excludeLevelId) return false;
+    if (!isZoneLevel(level)) return false;
+    if (String(level.parentLevelId) !== String(parentLevelId)) return false;
+    return String(level.name || level.internalName || '').trim().toLowerCase() === target;
+  });
 }
 
 /**
@@ -98,12 +114,10 @@ export function ensureLinkedZonePolygon(levels, zoneLevel, parentLevelId, { logi
       };
       return { ...level, zones };
     }
-    const newId = zones.length > 0
-      ? Math.max(0, ...zones.map((z) => Number(z.id) || 0)) + 1
-      : 1;
+    const newId = crypto.randomUUID();
     zones.push({
       id: newId,
-      name: zoneLevel.name || zoneLevel.internalName || `Zone ${newId}`,
+      name: zoneLevel.name || zoneLevel.internalName || `Zone ${zones.length + 1}`,
       linkedLevelId: zoneLevel.id,
       points: defaultZonePolygonPoints(logicalW, logicalH),
       color: '#3b82f6',
@@ -129,10 +143,10 @@ export function removeLinkedZonePolygons(levels, zoneLevelId) {
  * GarageLevels / FLICameras Level cell for a camera.
  * When traffic targets a linked zone (or a zone-level), use that zone-level's sheet name.
  */
-export function resolveCameraSheetLevelName(device, placementLevel, garageOrLevels) {
-  const levels = Array.isArray(garageOrLevels)
-    ? garageOrLevels
-    : (garageOrLevels?.levels || []);
+export function resolveCameraSheetLevelName(device, placementLevel, siteOrLevels) {
+  const levels = Array.isArray(siteOrLevels)
+    ? siteOrLevels
+    : (siteOrLevels?.levels || []);
   const flow = device?.trafficFlow;
   const placementName = placementLevel?.internalName || placementLevel?.name || '';
 

@@ -1,31 +1,27 @@
 /**
- * LayoutPersistenceService - Full customer setup snapshots (JSON file + SetupJson sheet tab).
+ * LayoutPersistenceService - customer setup snapshots (JSON file backup/restore,
+ * plus reading the legacy SetupJson sheet tab).
  *
- * The SetupJson tab is the shared source of truth: Save writes the entire customer
- * state (info, garages, levels, devices, floor plans, zones) so anyone opening
- * the site reads the same snapshot from Google Sheets.
+ * Supabase (Postgres + Storage) is now the app's source of truth — see
+ * CustomerRepository.js — so this module no longer writes to Google Sheets.
+ * What's left: the JSON export/import used for manual backups, and the
+ * SetupJson *read* path, which OpenConfigFromDriveService.js still uses to pull
+ * a customer's layout out of an old Drive-linked spreadsheet during a one-time
+ * real-data migration (see the "Explicitly out of scope" note in the migration
+ * plan — that migration is a deliberate later step, not part of normal usage).
  */
 import { downloadFile, readFileAsText } from './ConfigService';
-import { countGaragesDevices } from '../lib/deviceCountUtils';
+import { countSitesDevices } from '../lib/deviceCountUtils';
 import { normalizeCustomerConfig } from '../lib/customerUtils';
-import { buildConfigFileAppProperties } from '../lib/driveConfigCatalog';
-import { updateFileAppProperties } from './GoogleDriveService';
-import { enqueueSheetWrite } from './SheetsWriteQueue';
 import {
   SETUP_JSON_TAB,
-  SETUP_JSON_HEADERS,
-  SETUP_JSON_CHUNK_SIZE,
   SETUP_JSON_CHUNK_DATA_PREFIX,
-  SETUP_JSON_REVISION_RANGE,
 } from '../lib/configSheetSchema';
 import {
   getSpreadsheet,
   isMissingSheetTabError,
-  readRangeValues,
   readTabValues,
-  replaceTabAtomically,
   resolveSpreadsheetId,
-  spreadsheetUrl,
 } from './GoogleSheetsService';
 
 export const LAYOUT_SCHEMA_VERSION = 1;
@@ -40,7 +36,7 @@ function cloneJson(value) {
 /**
  * Build a portable setup document for one customer (full editor state).
  * @param {object} customer - Store customer record
- * @param {{ navigation?: { garageId?: number|null, levelId?: number|null } }} [options]
+ * @param {{ navigation?: { siteId?: number|null, levelId?: number|null } }} [options]
  */
 export function serializeCustomerLayout(customer, { navigation = null } = {}) {
   if (!customer || typeof customer !== 'object') {
@@ -57,26 +53,21 @@ export function serializeCustomerLayout(customer, { navigation = null } = {}) {
       code: customer.code || '',
       friendlyName: customer.friendlyName || '',
       config,
-      garages: cloneJson(customer.garages ?? []),
+      sites: cloneJson(customer.sites ?? []),
       ...(Array.isArray(customer.displaySchedules)
         ? { displaySchedules: cloneJson(customer.displaySchedules) }
         : {}),
     },
   };
 
-  if (navigation && (navigation.garageId != null || navigation.levelId != null)) {
+  if (navigation && (navigation.siteId != null || navigation.levelId != null)) {
     payload.navigation = {
-      garageId: navigation.garageId ?? null,
+      siteId: navigation.siteId ?? null,
       levelId: navigation.levelId ?? null,
     };
   }
 
   return payload;
-}
-
-/** Encode opaque chunk text so Sheets never treats leading +/= as a formula. */
-export function encodeSetupJsonChunkData(data) {
-  return `${SETUP_JSON_CHUNK_DATA_PREFIX}${String(data ?? '')}`;
 }
 
 /** Decode a SetupJson Data cell; accepts legacy unprefixed chunks. */
@@ -117,37 +108,6 @@ export function setupContentHash(payload) {
   if (typeof payload === 'string') return payloadHash(payload);
   const { savedAt: _savedAt, ...rest } = payload || {};
   return payloadHash(JSON.stringify(rest));
-}
-
-/**
- * Split a setup JSON string into sheet rows for the SetupJson tab.
- * @param {object|string} payload - Setup payload object or pre-stringified JSON
- * @returns {string[][]}
- */
-export function setupJsonChunksFromPayload(payload) {
-  const json = typeof payload === 'string' ? payload : JSON.stringify(payload);
-  if (json.length > MAX_LAYOUT_JSON_BYTES) {
-    throw new Error('Setup is too large to save. Try removing floor-plan images or split by site.');
-  }
-
-  const chunks = [];
-  for (let i = 0; i < json.length; i += SETUP_JSON_CHUNK_SIZE) {
-    chunks.push(json.slice(i, i + SETUP_JSON_CHUNK_SIZE));
-  }
-  const total = Math.max(chunks.length, 1);
-  const dataChunks = chunks.length ? chunks : ['{}'];
-  const savedAt = (typeof payload === 'object' && payload?.savedAt) || '';
-  const hash = setupContentHash(payload);
-
-  return [
-    [...SETUP_JSON_HEADERS],
-    ...dataChunks.map((data, index) => (
-      // The revision rides on the first data row so it can be read on its own.
-      index === 0
-        ? [index, total, encodeSetupJsonChunkData(data), savedAt, hash]
-        : [index, total, encodeSetupJsonChunkData(data)]
-    )),
-  ];
 }
 
 /** Reassemble the JSON string a set of chunk rows encodes (no validation). */
@@ -284,11 +244,11 @@ export function validateLayoutPayload(data) {
     throw new Error('Invalid setup file: missing customer data.');
   }
 
-  if (!Array.isArray(customer.garages)) {
-    throw new Error('Invalid setup file: customer.garages must be an array.');
+  if (!Array.isArray(customer.sites)) {
+    throw new Error('Invalid setup file: customer.sites must be an array.');
   }
 
-  const deviceCount = countGaragesDevices(customer.garages);
+  const deviceCount = countSitesDevices(customer.sites);
   if (deviceCount > MAX_LAYOUT_DEVICES) {
     throw new Error(`Setup contains too many devices (${deviceCount}). Maximum is ${MAX_LAYOUT_DEVICES}.`);
   }
@@ -299,7 +259,7 @@ export function validateLayoutPayload(data) {
       throw new Error('Invalid setup file: navigation must be an object.');
     }
     navigation = {
-      garageId: data.navigation.garageId ?? null,
+      siteId: data.navigation.siteId ?? null,
       levelId: data.navigation.levelId ?? null,
     };
   }
@@ -310,7 +270,7 @@ export function validateLayoutPayload(data) {
       code: String(customer.code || '').trim(),
       friendlyName: String(customer.friendlyName || '').trim(),
       config: normalizeCustomerConfig({ config: customer.config }),
-      garages: cloneJson(customer.garages),
+      sites: cloneJson(customer.sites),
       ...(Array.isArray(customer.displaySchedules)
         ? { displaySchedules: cloneJson(customer.displaySchedules) }
         : {}),
@@ -342,7 +302,7 @@ export function parseLayoutJson(text) {
   return validateLayoutPayload(data);
 }
 
-// isSetupSnapshotUnchanged() was removed deliberately. It let loadSetupFromSheet
+// isSetupSnapshotUnchanged() was removed deliberately. It let loadCustomerSetup
 // skip applying a snapshot whose savedAt matched the local timestamp, on the
 // assumption that memory already held that layout. With the sheet as the source
 // of truth, memory holds nothing until a hydrate runs, so the optimization
@@ -408,134 +368,9 @@ export async function readSetupJsonFromSpreadsheet(customer) {
 }
 
 /**
- * Write the full setup snapshot to the SetupJson tab on a Google Sheet.
- * @param {object} customer
- * @param {object} [payload] - Pre-built payload; serialized from customer if omitted
- */
-export async function writeSetupJsonToSpreadsheet(customer, payload = null) {
-  const spreadsheetId = customer.spreadsheetId || await resolveSpreadsheetId(customer);
-  if (!spreadsheetId) {
-    throw new Error('No Google Sheet found for this customer. Link a native Google Sheet or create one in the shared folder.');
-  }
-
-  const setupPayload = payload || serializeCustomerLayout(customer);
-  const json = JSON.stringify(setupPayload);
-  const rows = setupJsonChunksFromPayload(setupPayload);
-
-  // Serialized against config tab writes and any other snapshot save for this
-  // spreadsheet: overlapping saves would share one staging tab and delete each
-  // other's half-written scratch data.
-  await enqueueSheetWrite(spreadsheetId, () => replaceTabAtomically(spreadsheetId, SETUP_JSON_TAB, rows, {
-    valueInputOption: 'RAW',
-    verify: (writtenRows) => {
-      // Confirms the staged payload is complete and byte-identical before it is
-      // allowed to replace the live tab.
-      validateSetupJsonChunkRows(writtenRows);
-      if (setupJsonTextFromRows(writtenRows) !== json) {
-        throw new Error('Setup did not save completely — the sheet was left unchanged. Try again.');
-      }
-    },
-  }));
-
-  // Stamp shared catalog metadata (Enterprise badge, counts) on the Drive file
-  // so every browser's customer list shows it without opening the sheet.
-  try {
-    await updateFileAppProperties(
-      spreadsheetId,
-      buildConfigFileAppProperties(setupPayload.customer, setupPayload.savedAt),
-    );
-  } catch {
-    // Best-effort — never fail the setup save over catalog metadata.
-  }
-
-  return { setupPayload, spreadsheetId, contentHash: setupContentHash(setupPayload) };
-}
-
-/**
- * Read just the SetupJson revision (SavedAt + PayloadHash) — two cells.
- *
- * The conflict check used to reload the entire snapshot before every save. For
- * a customer with twenty floor plans that is ~10 MB down and ~10 MB up every
- * four seconds of editing, which is a large part of why saves timed out and hit
- * rate limits in the first place.
- *
- * @returns {Promise<{ savedAt: string|null, hash: string|null }>}
- */
-export async function readSetupJsonRevision(customer) {
-  let spreadsheetId = customer?.spreadsheetId || null;
-  if (!spreadsheetId) {
-    try {
-      spreadsheetId = await resolveSpreadsheetId(customer);
-    } catch {
-      return { savedAt: null, hash: null };
-    }
-  }
-  if (!spreadsheetId) return { savedAt: null, hash: null };
-
-  const rows = await readRangeValues(spreadsheetId, SETUP_JSON_REVISION_RANGE);
-  const row = rows?.[0] || [];
-  const savedAt = String(row[0] ?? '').trim() || null;
-  const hash = String(row[1] ?? '').trim() || null;
-  if (savedAt) return { savedAt, hash };
-
-  // A tab written before the revision columns existed has nothing in D2:E2.
-  // Fall back to the payload's own savedAt so the conflict check still works on
-  // sheets already in the wild — without this, the first save after upgrading
-  // would skip the check and could overwrite someone else's newer work. Costs
-  // one full read per sheet, once: the next save writes the revision cells.
-  try {
-    const snapshot = await readSetupJsonFromSpreadsheet({ ...customer, spreadsheetId });
-    return { savedAt: snapshot?.savedAt ?? null, hash: null };
-  } catch {
-    // An unreadable tab is handled by the caller's own read; do not mask it here.
-    return { savedAt: null, hash: null };
-  }
-}
-
-/**
- * Save the full customer setup — writes to Google Sheet when available.
- * Falls back to JSON download for Excel-only Drive links.
- *
- * @param {object} customer
- * @param {{ navigation?: object, download?: boolean }} [options]
- * @returns {Promise<{ payload: object, sheetSaved: boolean, downloaded: boolean }>}
- */
-export async function saveCustomerSetup(customer, { navigation = null, download = false } = {}) {
-  const payload = serializeCustomerLayout(customer, { navigation });
-  let sheetSaved = false;
-  let downloaded = false;
-  let spreadsheetId = null;
-  try {
-    spreadsheetId = await resolveSpreadsheetId(customer);
-  } catch {
-    spreadsheetId = null;
-  }
-
-  if (spreadsheetId) {
-    await writeSetupJsonToSpreadsheet({ ...customer, spreadsheetId }, payload);
-    sheetSaved = true;
-  }
-
-  if (download || !sheetSaved) {
-    const json = JSON.stringify(payload, null, 2);
-    if (json.length > MAX_LAYOUT_JSON_BYTES) {
-      throw new Error('Setup is too large to save. Try removing floor-plan images or split by site.');
-    }
-    downloadFile(json, layoutFilename(customer), 'application/json');
-    downloaded = true;
-  }
-
-  return {
-    payload,
-    sheetSaved,
-    downloaded,
-    spreadsheetId,
-    spreadsheetUrl: spreadsheetId ? spreadsheetUrl(spreadsheetId) : null,
-  };
-}
-
-/**
  * Load setup from Google Sheet and return parsed snapshot (null if tab empty/missing).
+ * Used only by OpenConfigFromDriveService.js's legacy-data import path — see the
+ * module docstring above.
  * @param {object} customer
  */
 export async function loadCustomerSetupFromSheet(customer) {

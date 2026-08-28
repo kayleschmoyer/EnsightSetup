@@ -66,7 +66,7 @@ const layout = vi.hoisted(() => {
       customer: {
         friendlyName: customer.friendlyName,
         config: customer.config,
-        garages: customer.garages,
+        sites: customer.sites,
       },
     })),
     setupContentHash: vi.fn(() => 'hash'),
@@ -104,24 +104,24 @@ const site = (name, over = {}) => ({
 });
 
 /** A parse result shaped the way ExcelParserService returns one. */
-function parsed(garages, over = {}) {
+function parsed(sites, over = {}) {
   return {
-    garages,
+    sites,
     sheetNames: ['Customer', 'Garages'],
-    rawData: { Customer: [{}], Garages: garages.map(() => ({})), displaySchedules: [] },
+    rawData: { Customer: [{}], Garages: sites.map(() => ({})), displaySchedules: [] },
     importStats: { skippedDisplayLevelRows: 0 },
     ...over,
   };
 }
 
-function setParse(garages, over = {}) {
-  const p = parsed(garages, over);
+function setParse(sites, over = {}) {
+  const p = parsed(sites, over);
   parser.parseExcelFile.mockReturnValue(p);
   parser.getImportSummary.mockReturnValue({
-    totalGarages: garages.length,
-    totalLevels: garages.reduce((s, g) => s + g.levels.length, 0),
+    totalSites: sites.length,
+    totalLevels: sites.reduce((s, g) => s + g.levels.length, 0),
     totalDevices: 0,
-    tabCounts: { Garages: garages.length },
+    tabCounts: { Garages: sites.length },
     skippedDisplayLevelRows: over.skipped ?? 0,
   });
   return p;
@@ -131,7 +131,7 @@ function setStore({ customers = [] } = {}) {
   useAppStore.setState({
     customers,
     selectedCustomerId: null,
-    selectedGarageId: null,
+    selectedSiteId: null,
     selectedLevelId: null,
     currentView: 'import',
     hydration: {},
@@ -153,7 +153,7 @@ function field(labelText) {
 }
 
 /**
- * The count above a summary stat label, e.g. stat('Garages') → '2'. Scoped to
+ * The count above a summary stat label, e.g. stat('Sites') → '2'. Scoped to
  * the stat cards, since the Sheet Data table below repeats the same tab names.
  */
 function stat(label) {
@@ -195,7 +195,7 @@ const existingCustomer = (over = {}) => ({
   spreadsheetId: 'sheet-existing',
   spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-existing/edit',
   config: {},
-  garages: [site('North Garage', { id: 4 })],
+  sites: [site('North Garage', { id: 4 })],
   ...over,
 });
 
@@ -224,7 +224,7 @@ beforeEach(() => {
     customer: {
       friendlyName: 'Acme',
       config: { address: '5 Existing Way', city: 'Denver' },
-      garages: [
+      sites: [
         { id: 4, name: 'North Garage', internalName: 'North Garage', levels: [], quickLinks: [] },
         { id: 5, name: 'Old Garage', internalName: 'Old Garage', levels: [], quickLinks: [] },
       ],
@@ -313,7 +313,7 @@ describe('the import summary', () => {
 
     expect(drive.downloadFile).toHaveBeenCalledWith('file-1');
     expect(parser.parseExcelFile).toHaveBeenCalled();
-    expect(stat('Garages')).toBe('2');
+    expect(stat('Sites')).toBe('2');
     expect(stat('Levels')).toBe('2');
     expect(stat('Devices')).toBe('0');
   });
@@ -386,7 +386,7 @@ describe('importing a customer that does not exist yet', () => {
     expect(screen.queryByText('Customer Already Exists')).toBeNull();
     const created = list()[0];
     expect(created.friendlyName).toBe('ACME');
-    expect(created.garages.map((g) => g.name)).toEqual(['North Garage']);
+    expect(created.sites.map((g) => g.name)).toEqual(['North Garage']);
   });
 
   it('records the sheet the import created', async () => {
@@ -414,8 +414,8 @@ describe('importing a customer that does not exist yet', () => {
     await clickInDialog(user, /continue/i);
 
     await waitFor(() => expect(list()).toHaveLength(1));
-    for (const garage of list()[0].garages) {
-      expect(garage.quickLinks.some((l) => l.icon === 'sheets')).toBe(true);
+    for (const s of list()[0].sites) {
+      expect(s.quickLinks.some((l) => l.icon === 'sheets')).toBe(true);
     }
   });
 
@@ -442,7 +442,7 @@ describe('importing a customer that does not exist yet', () => {
     await toSummary(user);
     await clickInDialog(user, /continue/i);
 
-    await waitFor(() => expect(useAppStore.getState().currentView).toBe('garages'));
+    await waitFor(() => expect(useAppStore.getState().currentView).toBe('sites'));
     expect(useAppStore.getState().selectedCustomerId).toBe(list()[0].id);
   });
 
@@ -472,7 +472,7 @@ describe('importing over a customer that already exists', () => {
 
     // Still one customer, still its original site — nothing has happened yet.
     expect(list()).toHaveLength(1);
-    expect(byId(1).garages).toHaveLength(1);
+    expect(byId(1).sites).toHaveLength(1);
     expect(sync.prepareImportFromDriveFile).not.toHaveBeenCalled();
   });
 
@@ -509,7 +509,7 @@ describe('merge', () => {
     await user.click(screen.getByText('Merge / Update'));
 
     expect(await screen.findByText('Confirm Merge / Update')).toBeTruthy();
-    expect(byId(1).garages).toHaveLength(1);
+    expect(byId(1).sites).toHaveLength(1);
     expect(sync.prepareImportFromDriveFile).not.toHaveBeenCalled();
   });
 
@@ -517,7 +517,7 @@ describe('merge', () => {
     const user = userEvent.setup();
     setStore({
       customers: [existingCustomer({
-        garages: [site('North Garage', { id: 4 }), site('Old Garage', { id: 5 })],
+        sites: [site('North Garage', { id: 4 }), site('Old Garage', { id: 5 })],
       })],
     });
     setParse([site('North Garage'), site('West Garage', { id: 2 })]);
@@ -527,8 +527,8 @@ describe('merge', () => {
     await user.click(screen.getByText('Merge / Update'));
     await clickInDialog(user, /merge \/ update/i);
 
-    await waitFor(() => expect(byId(1).garages).toHaveLength(3));
-    expect(byId(1).garages.map((g) => g.name).sort()).toEqual(
+    await waitFor(() => expect(byId(1).sites).toHaveLength(3));
+    expect(byId(1).sites.map((g) => g.name).sort()).toEqual(
       ['North Garage', 'Old Garage', 'West Garage'],
     );
   });
@@ -547,8 +547,8 @@ describe('merge', () => {
     await user.click(screen.getByText('Merge / Update'));
     await clickInDialog(user, /merge \/ update/i);
 
-    await waitFor(() => expect(byId(1).garages[0].levels).toHaveLength(2));
-    expect(byId(1).garages).toHaveLength(1);
+    await waitFor(() => expect(byId(1).sites[0].levels).toHaveLength(2));
+    expect(byId(1).sites).toHaveLength(1);
   });
 
   it('writes into the customer’s existing sheet rather than making a second one', async () => {
@@ -611,7 +611,7 @@ describe('merge', () => {
 describe('replace', () => {
   beforeEach(() => setStore({
     customers: [existingCustomer({
-      garages: [site('North Garage', { id: 4 }), site('Old Garage', { id: 5 })],
+      sites: [site('North Garage', { id: 4 }), site('Old Garage', { id: 5 })],
     })],
   }));
 
@@ -623,7 +623,7 @@ describe('replace', () => {
     await user.click(screen.getByText('Replace All Sites'));
 
     expect(await screen.findByText('Replace All Sites?')).toBeTruthy();
-    expect(byId(1).garages).toHaveLength(2);
+    expect(byId(1).sites).toHaveLength(2);
     expect(sync.prepareImportFromDriveFile).not.toHaveBeenCalled();
   });
 
@@ -636,7 +636,7 @@ describe('replace', () => {
     await clickInDialog(user, /continue/i);
 
     expect(await screen.findByText('Are you absolutely sure?')).toBeTruthy();
-    expect(byId(1).garages).toHaveLength(2);
+    expect(byId(1).sites).toHaveLength(2);
     expect(sync.prepareImportFromDriveFile).not.toHaveBeenCalled();
   });
 
@@ -662,7 +662,7 @@ describe('replace', () => {
     await clickInDialog(user, /back/i);
 
     expect(await screen.findByText('Replace All Sites?')).toBeTruthy();
-    expect(byId(1).garages).toHaveLength(2);
+    expect(byId(1).sites).toHaveLength(2);
   });
 
   it('drops every existing site once both gates are passed', async () => {
@@ -675,8 +675,8 @@ describe('replace', () => {
     await clickInDialog(user, /continue/i);
     await clickInDialog(user, /replace everything/i);
 
-    await waitFor(() => expect(byId(1).garages).toHaveLength(1));
-    expect(byId(1).garages[0].name).toBe('West Garage');
+    await waitFor(() => expect(byId(1).sites).toHaveLength(1));
+    expect(byId(1).sites[0].name).toBe('West Garage');
   });
 
   it('overwrites the customer address too, unlike merge', async () => {
@@ -723,7 +723,7 @@ describe('replace', () => {
     // The destructive half must not run ahead of the sheet write; otherwise a
     // failed import leaves the customer with nothing and no way back.
     await waitFor(() => expect(screen.getByText('Drive quota exceeded')).toBeTruthy());
-    expect(byId(1).garages).toHaveLength(2);
+    expect(byId(1).sites).toHaveLength(2);
   });
 });
 
@@ -755,7 +755,7 @@ describe('the import survives the load that follows it', () => {
   beforeEach(() => {
     setStore({
       customers: [existingCustomer({
-        garages: [site('North Garage', { id: 4 }), site('Old Garage', { id: 5 })],
+        sites: [site('North Garage', { id: 4 }), site('Old Garage', { id: 5 })],
       })],
     });
   });
@@ -769,10 +769,10 @@ describe('the import survives the load that follows it', () => {
     await user.click(screen.getByText('Merge / Update'));
     await clickInDialog(user, /merge \/ update/i);
 
-    await waitFor(() => expect(byId(1).garages).toHaveLength(3));
+    await waitFor(() => expect(byId(1).sites).toHaveLength(3));
     // Let the load that selectCustomer kicked off settle.
     await waitFor(() => expect(useAppStore.getState().hydration[1]).toBeTruthy());
-    expect(byId(1).garages.map((g) => g.name)).toContain('West Garage');
+    expect(byId(1).sites.map((g) => g.name)).toContain('West Garage');
   });
 
   it('a replace is not undone by the pre-import snapshot', async () => {
@@ -785,8 +785,8 @@ describe('the import survives the load that follows it', () => {
     await clickInDialog(user, /continue/i);
     await clickInDialog(user, /replace everything/i);
 
-    await waitFor(() => expect(byId(1).garages).toHaveLength(1));
+    await waitFor(() => expect(byId(1).sites).toHaveLength(1));
     await waitFor(() => expect(useAppStore.getState().hydration[1]).toBeTruthy());
-    expect(byId(1).garages.map((g) => g.name)).toEqual(['West Garage']);
+    expect(byId(1).sites.map((g) => g.name)).toEqual(['West Garage']);
   });
 });

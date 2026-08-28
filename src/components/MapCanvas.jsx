@@ -4,6 +4,7 @@ import useImage from 'use-image';
 import { LOGICAL_W, LOGICAL_H, getLogicalCanvasFit } from '../lib/canvasConstants';
 import { coneWedgeRotation, isDualLensCamera } from '../lib/deviceNamingUtils';
 import { signMapLabelLines } from '../lib/signInserts';
+import { getFloorPlanSignedUrl } from '../services/ImageUploadService';
 
 const hexToRgba = (hex, alpha) => {
   const cleaned = (hex || '#3b82f6').replace('#', '');
@@ -258,8 +259,26 @@ const DEVICE_LABELS = {
   'sensor-ensight': 'EV',
 };
 
+/**
+ * bgImage is a Storage object path, not a renderable src — resolve a
+ * short-lived signed URL before loading (see ImageUploadService.getSignedUrl).
+ */
+function useFloorPlanSignedUrl(path) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    if (!path) { setUrl(null); return undefined; }
+    let cancelled = false;
+    getFloorPlanSignedUrl(path).then((signed) => {
+      if (!cancelled) setUrl(signed);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [path]);
+  return url;
+}
+
 function BackgroundImage({ src, width, height }) {
-  const [image] = useImage(src);
+  const signedUrl = useFloorPlanSignedUrl(src);
+  const [image] = useImage(signedUrl);
   if (!image) return null;
   // Fit the image inside the logical canvas (letterbox), centered.
   const scale = Math.min(width / image.width, height / image.height);

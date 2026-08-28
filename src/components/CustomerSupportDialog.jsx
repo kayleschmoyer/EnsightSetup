@@ -7,8 +7,7 @@ import {
   normalizeCustomerConfig,
   customerConfigPatch,
 } from '../lib/customerUtils';
-import { syncCustomerToSheet } from '../services/ConfigSheetSyncService';
-import { customerCanSyncToSheet } from '../lib/customerConfigUtils';
+import { updateCustomerInfo } from '../services/CustomerRepository';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from './ui/dialog';
@@ -91,18 +90,17 @@ export default function CustomerSupportDialog({ customer, open, onOpenChange }) 
       maintenanceOther: form.maintenanceProvider === 'other' ? form.maintenanceOther.trim() : '',
     });
     const updates = customerConfigPatch(customer, { support: normalized });
-    updateCustomer(customer.id, updates);
-    const canSync = customerCanSyncToSheet(customer);
-    if (canSync) {
-      try {
-        await syncCustomerToSheet({ customer: { ...customer, ...updates } });
-      } catch (err) {
-        setSyncError(
-          err.message
-            || 'Support info saved locally, but Google Sheet sync failed. Keep this dialog open or try again in about a minute.',
-        );
-        return;
-      }
+    try {
+      const { updatedAt } = await updateCustomerInfo(customer.id, {
+        friendlyName: customer.friendlyName || '',
+        support: normalized,
+      });
+      updateCustomer(customer.id, { ...updates, lastSetupSavedAt: updatedAt });
+    } catch (err) {
+      setSyncError(
+        err.message || 'Save failed — nothing was changed. Check your connection and try again.',
+      );
+      return;
     }
     onOpenChange(false);
   }, [customer, form, onOpenChange, updateCustomer]);

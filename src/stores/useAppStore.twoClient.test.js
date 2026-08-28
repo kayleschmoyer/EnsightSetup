@@ -7,49 +7,41 @@
  *   adds cameras, edits signs. A reopens and sees B's changes.
  *
  * "A different machine in a different state" is modelled literally: B starts
- * with empty localStorage and nothing in memory, so everything B renders has to
- * come from the sheet.
+ * with empty localStorage and nothing in memory, so everything B renders has
+ * to come from Supabase — modelled here with a fake CustomerRepository backed
+ * by an in-memory row (see fakeCustomerRepository.js). Floor-plan backgrounds
+ * are now Storage object paths (short strings) rather than embedded base64, so
+ * this no longer needs to push ~500KB of fake base64 per level to exercise a
+ * realistic save.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createFakeSheets } from '../services/__fixtures__/fakeSheets';
+import { createFakeCustomerRepository } from '../services/__fixtures__/fakeCustomerRepository';
 import { installBrowserEnv } from '../services/__fixtures__/browserEnv';
 
 const h = vi.hoisted(() => ({ fake: null }));
 
-vi.mock('../services/GoogleDriveService', () => ({
-  fetchWithTimeout: (...args) => h.fake.fetchWithTimeout(...args),
-  getAccessToken: () => 'test-token',
-  isSignedIn: () => true,
-  hadGoogleSession: () => true,
-  refreshAccessTokenSilently: async () => 'test-token',
-  invalidateGoogleAccessToken: () => {},
-  getFileMetadata: async () => ({ id: 'f', mimeType: 'application/vnd.google-apps.spreadsheet' }),
-  updateFileAppProperties: async () => ({}),
-  findConfigSheetInFolder: async () => null,
-  trashDriveFile: async () => ({}),
-  downloadConfigFile: async () => new ArrayBuffer(0),
-  renameDriveFile: async () => ({}),
-  SPREADSHEET_MIME: 'application/vnd.google-apps.spreadsheet',
+vi.mock('../services/CustomerRepository', () => ({
+  loadCustomerFull: (...args) => h.fake.loadCustomerFull(...args),
+  saveCustomerFull: (...args) => h.fake.saveCustomerFull(...args),
+  subscribeToCustomerChanges: (...args) => h.fake.subscribeToCustomerChanges(...args),
 }));
 
 installBrowserEnv();
 
 const { useAppStore } = await import('./useAppStore');
 
+const CUSTOMER_ID = 'acme-id';
 const LEVEL_COUNT = 20;
-const BG = (marker) => `data:image/png;base64,${marker.repeat(500_000)}`;
+const BG = (marker) => `floor-plans/${CUSTOMER_ID}/garage-1/level-${marker}/bg.webp`;
 
-let spreadsheetId;
-
-/** Exactly what localStorage holds for a sheet-backed customer: pointers. */
+/** Exactly what localStorage holds for a Supabase-backed customer: pointers. */
 function pointerCustomer() {
   return {
-    id: 1,
+    id: CUSTOMER_ID,
     customerId: 'acme',
     code: 'ACME',
     friendlyName: 'Acme',
-    spreadsheetId,
-    garages: null,
+    sites: null,
     lastSetupSavedAt: null,
   };
 }
@@ -58,38 +50,39 @@ function pointerCustomer() {
 function coldBrowser() {
   useAppStore.setState({
     customers: [pointerCustomer()],
-    selectedCustomerId: 1,
-    selectedGarageId: null,
+    selectedCustomerId: CUSTOMER_ID,
+    selectedSiteId: null,
     selectedLevelId: null,
     hydration: {},
     pendingRoute: null,
     setupSync: { status: 'idle', error: null, savedAt: null, customerId: null },
-    currentView: 'garages',
+    currentView: 'sites',
   });
 }
 
-function currentGarage() {
-  return useAppStore.getState().customers[0].garages[0];
+function currentSite() {
+  return useAppStore.getState().customers[0].sites[0];
 }
 
 beforeEach(() => {
-  h.fake = createFakeSheets();
-  spreadsheetId = h.fake.createSpreadsheet({ title: 'Acme-config', tabs: ['Garages'] }).id;
+  h.fake = createFakeCustomerRepository();
+  // Nothing seeded — this customer has no Supabase row content yet, matching
+  // the old "no SetupJson tab" starting state.
 });
 
-describe('two people, two machines, one sheet', () => {
+describe('two people, two machines, one Supabase row', () => {
   it('round-trips a full editing session in both directions', async () => {
     // ---- A: builds the site with 20 levels, each with a background ---------
     coldBrowser();
-    await useAppStore.getState().loadSetupFromSheet(1);
-    expect(useAppStore.getState().hydration[1]).toBe('absent');
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    expect(useAppStore.getState().hydration[CUSTOMER_ID]).toBe('absent');
 
-    useAppStore.getState().setGarages(() => [{
-      id: 1,
+    useAppStore.getState().setSites(() => [{
+      id: 'garage-1',
       name: 'North',
       internalName: 'North',
       levels: Array.from({ length: LEVEL_COUNT }, (_, i) => ({
-        id: i + 1,
+        id: `level-${i + 1}`,
         name: `Level ${i + 1}`,
         bgImage: BG('A'),
         devices: [{ id: `cam-a-${i}`, type: 'cam-fli', name: `${i + 1}.1F`, x: i * 10, y: 20 }],
@@ -97,20 +90,20 @@ describe('two people, two machines, one sheet', () => {
       })),
     }]);
 
-    await useAppStore.getState().saveCustomerSetupToSheet(1);
+    await useAppStore.getState().saveCustomerSetup(CUSTOMER_ID);
     expect(useAppStore.getState().setupSync.status).toBe('saved');
     const aSavedAt = useAppStore.getState().customers[0].lastSetupSavedAt;
     expect(aSavedAt).toBeTruthy();
 
     // ---- B: different machine, empty localStorage, nothing in memory ------
     coldBrowser();
-    expect(useAppStore.getState().customers[0].garages).toBe(null);
+    expect(useAppStore.getState().customers[0].sites).toBe(null);
 
-    await useAppStore.getState().loadSetupFromSheet(1);
-    expect(useAppStore.getState().hydration[1]).toBe('hydrated');
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    expect(useAppStore.getState().hydration[CUSTOMER_ID]).toBe('hydrated');
 
     // B sees every one of A's edits.
-    const asBSees = currentGarage();
+    const asBSees = currentSite();
     expect(asBSees.name).toBe('North');
     expect(asBSees.levels).toHaveLength(LEVEL_COUNT);
     expect(asBSees.levels.every((l) => l.bgImage === BG('A'))).toBe(true);
@@ -118,9 +111,9 @@ describe('two people, two machines, one sheet', () => {
     expect(asBSees.levels[7].devices[0].x).toBe(70);
 
     // ---- B: replaces backgrounds, adds a camera, edits a sign ------------
-    useAppStore.getState().setGarages((garages) => garages.map((g) => ({
-      ...g,
-      levels: g.levels.map((level, i) => ({
+    useAppStore.getState().setSites((sites) => sites.map((s) => ({
+      ...s,
+      levels: s.levels.map((level, i) => ({
         ...level,
         bgImage: BG('B'),
         devices: [
@@ -135,16 +128,16 @@ describe('two people, two machines, one sheet', () => {
       })),
     })));
 
-    await useAppStore.getState().saveCustomerSetupToSheet(1);
+    await useAppStore.getState().saveCustomerSetup(CUSTOMER_ID);
     expect(useAppStore.getState().setupSync.status).toBe('saved');
     const bSavedAt = useAppStore.getState().customers[0].lastSetupSavedAt;
     expect(bSavedAt).not.toBe(aSavedAt);
 
     // ---- A: reopens later, cold, and sees B's changes ---------------------
     coldBrowser();
-    await useAppStore.getState().loadSetupFromSheet(1);
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
 
-    const asASeesNow = currentGarage();
+    const asASeesNow = currentSite();
     expect(asASeesNow.levels).toHaveLength(LEVEL_COUNT);
     expect(asASeesNow.levels.every((l) => l.bgImage === BG('B'))).toBe(true);
     const level1 = asASeesNow.levels[0];
@@ -152,54 +145,61 @@ describe('two people, two machines, one sheet', () => {
     expect(level1.devices[1].type).toBe('cam-lpr');
     expect(level1.devices[2].visibleName).toBe('North Entry');
     expect(useAppStore.getState().customers[0].lastSetupSavedAt).toBe(bSavedAt);
-  }, 30_000);
+  });
 
   it('flags a conflict instead of silently overwriting a newer save', async () => {
     // A loads and saves.
     coldBrowser();
-    await useAppStore.getState().loadSetupFromSheet(1);
-    useAppStore.getState().setGarages(() => [{ id: 1, name: 'North', levels: [] }]);
-    await useAppStore.getState().saveCustomerSetupToSheet(1);
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    useAppStore.getState().setSites(() => [{ id: 'garage-1', name: 'North', levels: [] }]);
+    await useAppStore.getState().saveCustomerSetup(CUSTOMER_ID);
     const aState = useAppStore.getState().customers[0];
 
     // B loads the same thing and saves something different.
     coldBrowser();
-    await useAppStore.getState().loadSetupFromSheet(1);
-    useAppStore.getState().setGarages(() => [{ id: 1, name: 'North (B)', levels: [] }]);
-    await useAppStore.getState().saveCustomerSetupToSheet(1);
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    useAppStore.getState().setSites(() => [{ id: 'garage-1', name: 'North (B)', levels: [] }]);
+    await useAppStore.getState().saveCustomerSetup(CUSTOMER_ID);
     expect(useAppStore.getState().setupSync.status).toBe('saved');
 
     // A — still holding the older timestamp — tries to save on top.
     useAppStore.setState({
-      customers: [{ ...aState, garages: [{ id: 1, name: 'North (A)', levels: [] }] }],
-      hydration: { 1: 'hydrated' },
+      customers: [{ ...aState, sites: [{ id: 'garage-1', name: 'North (A)', levels: [] }] }],
+      hydration: { [CUSTOMER_ID]: 'hydrated' },
     });
-    await useAppStore.getState().saveCustomerSetupToSheet(1);
+    await useAppStore.getState().saveCustomerSetup(CUSTOMER_ID);
 
     expect(useAppStore.getState().setupSync.status).toBe('conflict');
 
     // B's save survives untouched.
     coldBrowser();
-    await useAppStore.getState().loadSetupFromSheet(1);
-    expect(currentGarage().name).toBe('North (B)');
-  }, 20_000);
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    expect(currentSite().name).toBe('North (B)');
+  });
 
-  it('skips the write entirely when nothing actually changed', async () => {
+  it('overwriting after a conflict (force) replaces the remote save', async () => {
     coldBrowser();
-    await useAppStore.getState().loadSetupFromSheet(1);
-    useAppStore.getState().setGarages(() => [{
-      id: 1,
-      name: 'North',
-      levels: [{ id: 1, name: 'Level 1', bgImage: BG('A'), devices: [], zones: [] }],
-    }]);
-    await useAppStore.getState().saveCustomerSetupToSheet(1);
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    useAppStore.getState().setSites(() => [{ id: 'garage-1', name: 'North', levels: [] }]);
+    await useAppStore.getState().saveCustomerSetup(CUSTOMER_ID);
+    const aState = useAppStore.getState().customers[0];
 
-    // Save again with identical content — rewriting ~500k of base64 for a new
-    // timestamp is pure cost, and every write is a chance to fail.
-    h.fake.requests.length = 0;
-    await useAppStore.getState().saveCustomerSetupToSheet(1);
+    coldBrowser();
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    useAppStore.getState().setSites(() => [{ id: 'garage-1', name: 'North (B)', levels: [] }]);
+    await useAppStore.getState().saveCustomerSetup(CUSTOMER_ID);
+
+    useAppStore.setState({
+      customers: [{ ...aState, sites: [{ id: 'garage-1', name: 'North (A, forced)', levels: [] }] }],
+      hydration: { [CUSTOMER_ID]: 'hydrated' },
+      selectedCustomerId: CUSTOMER_ID,
+    });
+    await useAppStore.getState().saveCustomerSetup(CUSTOMER_ID, { force: true });
 
     expect(useAppStore.getState().setupSync.status).toBe('saved');
-    expect(h.fake.requests.filter((r) => r.method === 'PUT')).toHaveLength(0);
-  }, 20_000);
+
+    coldBrowser();
+    await useAppStore.getState().loadCustomerSetup(CUSTOMER_ID);
+    expect(currentSite().name).toBe('North (A, forced)');
+  });
 });

@@ -68,7 +68,7 @@ const customerRec = (over = {}) => ({
   spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
   spreadsheetTitle: 'Acme-config',
   config: {},
-  garages: [],
+  sites: [],
   ...over,
 });
 
@@ -76,7 +76,7 @@ function setStore({ customers = [] } = {}) {
   useAppStore.setState({
     customers,
     selectedCustomerId: null,
-    selectedGarageId: null,
+    selectedSiteId: null,
     selectedLevelId: null,
     currentView: 'customers',
     hydration: {},
@@ -159,10 +159,10 @@ describe('add a customer', () => {
     await submit(user, /^add customer$/i);
 
     await waitFor(() => expect(list()).toHaveLength(1));
-    const garage = list()[0].garages[0];
-    expect(garage).toBeTruthy();
-    expect(garage.levels).toHaveLength(1);
-    expect(garage.quickLinks.some((l) => l.icon === 'sheets')).toBe(true);
+    const site = list()[0].sites[0];
+    expect(site).toBeTruthy();
+    expect(site.levels).toHaveLength(1);
+    expect(site.quickLinks.some((l) => l.icon === 'sheets')).toBe(true);
   });
 
   it('stores the address on both the customer and its first site', async () => {
@@ -178,7 +178,7 @@ describe('add a customer', () => {
     await waitFor(() => expect(list()).toHaveLength(1));
     expect(list()[0].config.address).toBe('100 Main St');
     expect(list()[0].config.city).toBe('Boston');
-    expect(list()[0].garages[0].address).toBe('100 Main St');
+    expect(list()[0].sites[0].address).toBe('100 Main St');
   });
 
   it('will not submit an empty name', async () => {

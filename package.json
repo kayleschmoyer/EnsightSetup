@@ -30,6 +30,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.0",
+    "@supabase/supabase-js": "^2.109.0",
     "@tanstack/react-query": "^5.99.0",
     "@xyflow/react": "^12.10.2",
     "class-variance-authority": "^0.7.1",
@@ -38,11 +39,14 @@
     "events": "^3.3.0",
     "file-saver": "^2.0.5",
     "framer-motion": "^12.40.0",
+    "google-auth-library": "^10.9.1",
+    "jose": "^6.2.10",
     "jspdf": "^4.0.0",
     "konva": "^10.0.12",
     "lucide-react": "^1.8.0",
     "monaco-editor": "^0.55.1",
     "motion": "^12.38.0",
+    "mysql2": "^3.24.2",
     "pdfjs-dist": "^6.0.227",
     "pdfmake": "^0.3.2",
     "react": "^19.2.0",
@@ -75,12 +79,15 @@
     "jsdom": "^30.0.1",
     "postcss": "^8.5.9",
     "stream-browserify": "^3.0.0",
+    "supabase": "^2.114.0",
     "tailwindcss": "^3.4.19",
     "vite": "^6.0.1",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "ws": "^8.21.3"
   },
   "overrides": {
     "esbuild": "npm:esbuild-wasm@latest",
-    "rollup": "npm:@rollup/wasm-node@latest"
+    "rollup": "npm:@rollup/wasm-node@latest",
+    "undici": "7.29.0"
   }
 }

@@ -2,7 +2,8 @@ import { jsPDF } from 'jspdf';
 import { renderLevelToDataURL } from './LevelRenderer';
 import { LOGICAL_W, LOGICAL_H } from '../lib/canvasConstants';
 import { formatTrafficDirectionLabel } from '../lib/trafficFlowUtils';
-import { uniqueGarageDevices } from '../lib/deviceCountUtils';
+import { uniqueSiteDevices } from '../lib/deviceCountUtils';
+import { getDevicePhotoSignedUrl } from './ImageUploadService';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────────
 
@@ -114,6 +115,17 @@ function getImageDimensions(dataUrl) {
   });
 }
 
+function loadImage(src) {
+  return new Promise(resolve => {
+    const img = new window.Image();
+    // Signed Storage URLs are cross-origin — required for doc.addImage to read pixel data.
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
 function hexToRgb(hex) {
   if (!hex || typeof hex !== 'string') return null;
   const m = hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
@@ -187,7 +199,7 @@ function sectionHead(doc, y, title, accent = C.BLUE_600) {
 
 // ─── COVER PAGE ────────────────────────────────────────────────────────────────
 
-function drawCover(doc, garage, allLevels) {
+function drawCover(doc, site, allLevels) {
   const bannerH = 210;
   sf(doc, C.SLATE_900);
   doc.rect(0, 0, PAGE_W, bannerH, 'F');
@@ -200,15 +212,15 @@ function drawCover(doc, garage, allLevels) {
   doc.setTextColor(120, 170, 255);
   doc.text('PARKING FACILITY DOCUMENTATION', MARGIN, 55);
 
-  // Garage name
+  // Site name
   doc.setFontSize(26);
   doc.setFont('helvetica', 'bold');
   sc(doc, C.WHITE);
-  const nameLines = doc.splitTextToSize(garage.name || 'Unnamed Garage', CONTENT_W);
+  const nameLines = doc.splitTextToSize(site.name || 'Unnamed Site', CONTENT_W);
   doc.text(nameLines, MARGIN, 90);
 
   // Address
-  const addr = [garage.address, garage.city, garage.state, garage.zip].filter(Boolean).join(', ');
+  const addr = [site.address, site.city, site.state, site.zip].filter(Boolean).join(', ');
   if (addr) {
     doc.setFontSize(11);
     doc.setFont('helvetica', 'normal');
@@ -224,7 +236,7 @@ function drawCover(doc, garage, allLevels) {
 
   // ── Summary Cards ──
   let y = bannerH + 28;
-  const uniqueDevices = uniqueGarageDevices({ levels: allLevels });
+  const uniqueDevices = uniqueSiteDevices({ levels: allLevels });
   const totalDevices = uniqueDevices.length;
   const totalSpots = allLevels.reduce((s, l) => s + (l.totalSpots || 0), 0);
   const totalEV = allLevels.reduce((s, l) => s + (l.evSpots || 0), 0);
@@ -349,9 +361,9 @@ function drawCover(doc, garage, allLevels) {
 
 // ─── CONTACTS & SERVERS PAGE ───────────────────────────────────────────────────
 
-function drawContactsAndServers(doc, garage) {
-  const hasContacts = garage.contacts?.length > 0;
-  const hasServers = garage.servers?.length > 0;
+function drawContactsAndServers(doc, site) {
+  const hasContacts = site.contacts?.length > 0;
+  const hasServers = site.servers?.length > 0;
   if (!hasContacts && !hasServers) return;
 
   doc.addPage();
@@ -367,7 +379,7 @@ function drawContactsAndServers(doc, garage) {
       email: { color: C.GREEN_500, bg: C.GREEN_50, label: 'EMAIL' },
     };
 
-    const sorted = [...garage.contacts].sort((a, b) => {
+    const sorted = [...site.contacts].sort((a, b) => {
       if (a.type === 'emergency') return -1;
       if (b.type === 'emergency') return 1;
       return 0;
@@ -441,11 +453,11 @@ function drawContactsAndServers(doc, garage) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
 
-    garage.servers.forEach((srv, idx) => {
+    site.servers.forEach((srv, idx) => {
       y = checkPage(doc, y, 20);
       if (idx % 2 === 0) { sf(doc, C.SLATE_50); doc.rect(MARGIN, y - 4, CONTENT_W, 18, 'F'); }
 
-      const assignedCount = (garage.levels || []).reduce((sum, l) =>
+      const assignedCount = (site.levels || []).reduce((sum, l) =>
         sum + (l.devices || []).filter(d => d.serverId === srv.id).length, 0);
 
       sc(doc, C.SLATE_800);
@@ -760,7 +772,7 @@ function drawTableHeader(doc, y, columns) {
 
 // ─── CAMERA VIEWS PAGE ─────────────────────────────────────────────────────────
 
-function drawCameraViews(doc, allLevels) {
+async function drawCameraViews(doc, allLevels) {
   const camerasWithViews = allLevels.flatMap(l =>
     (l.devices || [])
       .filter(d => d.type?.startsWith('cam-') && d.viewImage)
@@ -768,6 +780,18 @@ function drawCameraViews(doc, allLevels) {
   );
 
   if (camerasWithViews.length === 0) return;
+
+  // viewImage is a Storage object path \u2014 resolve each to a signed URL and load
+  // the pixels before laying out the page, so the sync draw loop below never awaits.
+  const camerasWithImages = await Promise.all(camerasWithViews.map(async (cam) => {
+    try {
+      const url = await getDevicePhotoSignedUrl(cam.viewImage);
+      const img = url ? await loadImage(url) : null;
+      return { ...cam, img };
+    } catch {
+      return { ...cam, img: null };
+    }
+  }));
 
   doc.addPage();
   let y = 45;
@@ -778,7 +802,7 @@ function drawCameraViews(doc, allLevels) {
   const thumbH = 140;
   let col = 0;
 
-  camerasWithViews.forEach((cam) => {
+  camerasWithImages.forEach((cam) => {
     if (col === 0 && y + thumbH + 30 > PAGE_H - 50) {
       doc.addPage();
       y = 50;
@@ -790,9 +814,11 @@ function drawCameraViews(doc, allLevels) {
     rRect(doc, cx, y, thumbW, thumbH + 24, 4, { fill: C.WHITE, stroke: C.SLATE_200 });
 
     // Image
-    try {
-      doc.addImage(cam.viewImage, 'JPEG', cx + 3, y + 3, thumbW - 6, thumbH - 6);
-    } catch { /* skip */ }
+    if (cam.img) {
+      try {
+        doc.addImage(cam.img, 'JPEG', cx + 3, y + 3, thumbW - 6, thumbH - 6);
+      } catch { /* skip */ }
+    }
 
     // Caption
     doc.setFontSize(8);
@@ -815,17 +841,17 @@ function drawCameraViews(doc, allLevels) {
 
 // ─── MAIN EXPORT ───────────────────────────────────────────────────────────────
 
-export async function generateGaragePDF(garage, currentLevelId, stageRef) {
-  if (!garage) return;
+export async function generateSitePDF(site, currentLevelId, stageRef) {
+  if (!site) return;
 
   const doc = new jsPDF('portrait', 'pt', 'letter');
-  const allLevels = garage.levels || [];
+  const allLevels = site.levels || [];
 
   // ── Cover Page ──
-  drawCover(doc, garage, allLevels);
+  drawCover(doc, site, allLevels);
 
   // ── Contacts & Servers ──
-  drawContactsAndServers(doc, garage);
+  drawContactsAndServers(doc, site);
 
   // ── Level Pages ──
   // Render offscreen with crop-to-background so portrait plans fill the PDF map area.
@@ -840,15 +866,15 @@ export async function generateGaragePDF(garage, currentLevelId, stageRef) {
   }
 
   // ── Camera Views ──
-  drawCameraViews(doc, allLevels);
+  await drawCameraViews(doc, allLevels);
 
   // ── Page Numbers ──
   const totalPages = doc.internal.getNumberOfPages();
   for (let i = 1; i <= totalPages; i++) {
     doc.setPage(i);
-    drawFooter(doc, i, totalPages, garage.name || 'Garage');
+    drawFooter(doc, i, totalPages, site.name || 'Site');
   }
 
-  const filename = (garage.name || 'Garage').replace(/[^a-zA-Z0-9 _-]/g, '') + ' - Documentation.pdf';
+  const filename = (site.name || 'Site').replace(/[^a-zA-Z0-9 _-]/g, '') + ' - Documentation.pdf';
   doc.save(filename);
 }

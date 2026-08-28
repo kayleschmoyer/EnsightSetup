@@ -33,14 +33,14 @@ const layout = vi.hoisted(() => {
       customer: {
         friendlyName: customer.friendlyName,
         config: customer.config,
-        garages: customer.garages,
+        sites: customer.sites,
       },
     })),
-    setupContentHash: vi.fn((payload) => JSON.stringify(payload.customer.garages)),
+    setupContentHash: vi.fn((payload) => JSON.stringify(payload.customer.sites)),
     writeSetupJsonToSpreadsheet: vi.fn(async (customer, payload) => {
       setupJson.set(customer.spreadsheetId, {
         ...payload,
-        hash: JSON.stringify(payload.customer.garages),
+        hash: JSON.stringify(payload.customer.sites),
       });
     }),
     isSetupContentError: vi.fn(() => false),
@@ -59,13 +59,13 @@ vi.mock('../../services/GoogleDriveService', () => ({
   downloadConfigFile: vi.fn(async () => new ArrayBuffer(8)),
 }));
 vi.mock('../../services/ExcelParserService', () => ({
-  parseExcelFile: vi.fn(() => ({ garages: [] })),
+  parseExcelFile: vi.fn(() => ({ sites: [] })),
 }));
 
 const { useAppStore } = await import('../../stores/useAppStore');
 const SetupSyncIndicator = (await import('../SetupSyncIndicator')).default;
 
-const garage = (name) => ({
+const site = (name) => ({
   id: 1, name, internalName: name, levels: [], quickLinks: [],
 });
 
@@ -76,7 +76,7 @@ const customer = (over = {}) => ({
   spreadsheetId: 'sheet-1',
   spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
   config: {},
-  garages: [garage('Mine')],
+  sites: [site('Mine')],
   lastSetupSavedAt: '2026-01-01T00:00:00.000Z',
   ...over,
 });
@@ -85,7 +85,7 @@ function setStore({ customers = [customer()], setupSync = {}, hydration = { 1: '
   useAppStore.setState({
     customers,
     selectedCustomerId: 1,
-    selectedGarageId: null,
+    selectedSiteId: null,
     selectedLevelId: null,
     currentView: 'editor',
     hydration,
@@ -94,17 +94,17 @@ function setStore({ customers = [customer()], setupSync = {}, hydration = { 1: '
   });
 }
 
-const localGarages = () => useAppStore.getState().customers[0].garages.map((g) => g.name);
-const sheetGarages = () =>
-  layout.__setupJson.get('sheet-1')?.customer.garages.map((g) => g.name) ?? null;
+const localSites = () => useAppStore.getState().customers[0].sites.map((s) => s.name);
+const sheetSites = () =>
+  layout.__setupJson.get('sheet-1')?.customer.sites.map((s) => s.name) ?? null;
 
 /** Someone else's newer layout, already sitting on the sheet. */
 function seedRemote(names, savedAt = '2026-02-02T00:00:00.000Z') {
-  const garages = names.map((n, i) => ({ ...garage(n), id: i + 10 }));
+  const sites = names.map((n, i) => ({ ...site(n), id: i + 10 }));
   layout.__setupJson.set('sheet-1', {
     savedAt,
-    hash: JSON.stringify(garages),
-    customer: { friendlyName: 'Acme', config: {}, garages },
+    hash: JSON.stringify(sites),
+    customer: { friendlyName: 'Acme', config: {}, sites },
   });
 }
 
@@ -127,24 +127,24 @@ describe('what the chip says', () => {
   it('reports a load in progress', () => {
     setStore({ setupSync: { status: 'loading' } });
     render(<SetupSyncIndicator />);
-    expect(screen.getByText(/Loading shared layout/)).toBeTruthy();
+    expect(screen.getByText(/Loading layout/)).toBeTruthy();
   });
 
   it('reports a save in progress', () => {
     setStore({ setupSync: { status: 'saving' } });
     render(<SetupSyncIndicator />);
-    expect(screen.getByText(/Saving shared layout/)).toBeTruthy();
+    expect(screen.getByText(/Saving layout/)).toBeTruthy();
   });
 
   it('reports a customer with no writable sheet', () => {
     setStore({ setupSync: { status: 'unavailable' } });
     render(<SetupSyncIndicator />);
-    expect(screen.getByText('Needs a Google Sheet')).toBeTruthy();
+    expect(screen.getByText('Not synced')).toBeTruthy();
   });
 
   it('falls back to the idle state for a sheet-backed customer', () => {
     render(<SetupSyncIndicator />);
-    expect(screen.getByText('Shared layout on')).toBeTruthy();
+    expect(screen.getByText('Synced')).toBeTruthy();
   });
 
   it('shows nothing at all for a customer that cannot sync', () => {
@@ -159,7 +159,7 @@ describe('what the chip says', () => {
 
     // Another customer's conflict must not offer Overwrite on this one.
     expect(screen.queryByRole('button', { name: 'Overwrite' })).toBeNull();
-    expect(screen.getByText('Shared layout on')).toBeTruthy();
+    expect(screen.getByText('Synced')).toBeTruthy();
   });
 });
 
@@ -188,14 +188,14 @@ describe('a conflict', () => {
   it('Reload takes their version and drops mine', async () => {
     const user = userEvent.setup();
     render(<SetupSyncIndicator />);
-    expect(localGarages()).toEqual(['Mine']);
+    expect(localSites()).toEqual(['Mine']);
 
     await user.click(screen.getByRole('button', { name: 'Reload' }));
 
-    await waitFor(() => expect(localGarages()).toEqual(['Theirs']));
+    await waitFor(() => expect(localSites()).toEqual(['Theirs']));
     // And it must not write on the way — reloading is not a save.
     expect(layout.writeSetupJsonToSpreadsheet).not.toHaveBeenCalled();
-    expect(sheetGarages()).toEqual(['Theirs']);
+    expect(sheetSites()).toEqual(['Theirs']);
   });
 
   it('Overwrite puts mine on the sheet, over theirs', async () => {
@@ -204,8 +204,8 @@ describe('a conflict', () => {
 
     await user.click(screen.getByRole('button', { name: 'Overwrite' }));
 
-    await waitFor(() => expect(sheetGarages()).toEqual(['Mine']));
-    expect(localGarages()).toEqual(['Mine']);
+    await waitFor(() => expect(sheetSites()).toEqual(['Mine']));
+    expect(localSites()).toEqual(['Mine']);
   });
 
   it('Overwrite does not stall on the same conflict it is resolving', async () => {
@@ -224,7 +224,7 @@ describe('a conflict', () => {
 
     expect(useAppStore.getState().setupSync.status).toBe('conflict');
     expect(layout.writeSetupJsonToSpreadsheet).not.toHaveBeenCalled();
-    expect(localGarages()).toEqual(['Mine']);
+    expect(localSites()).toEqual(['Mine']);
   });
 });
 
@@ -249,7 +249,7 @@ describe('an error', () => {
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));
 
-    await waitFor(() => expect(localGarages()).toEqual(['Theirs']));
+    await waitFor(() => expect(localSites()).toEqual(['Theirs']));
     // Retrying a read must never turn into a write — that is the failure that
     // used to put an unloaded layout on the sheet.
     expect(layout.writeSetupJsonToSpreadsheet).not.toHaveBeenCalled();
@@ -262,7 +262,7 @@ describe('an error', () => {
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));
 
-    await waitFor(() => expect(sheetGarages()).toEqual(['Mine']));
+    await waitFor(() => expect(sheetSites()).toEqual(['Mine']));
   });
 
   it('Retry on an unhydrated customer still refuses to write', async () => {
@@ -277,7 +277,7 @@ describe('an error', () => {
 
     await waitFor(() => expect(useAppStore.getState().setupSync.status).toBe('error'));
     expect(layout.writeSetupJsonToSpreadsheet).not.toHaveBeenCalled();
-    expect(sheetGarages()).toBeNull();
+    expect(sheetSites()).toBeNull();
   });
 });
 
@@ -288,20 +288,15 @@ describe('the refresh button', () => {
     seedRemote(['Theirs']);
     render(<SetupSyncIndicator />);
 
-    await user.click(screen.getByRole('button', { name: 'Refresh shared layout' }));
+    await user.click(screen.getByRole('button', { name: 'Refresh layout' }));
 
-    await waitFor(() => expect(localGarages()).toEqual(['Theirs']));
+    await waitFor(() => expect(localSites()).toEqual(['Theirs']));
   });
 
-  it('is offered on the synced state too, with the time it saved', async () => {
-    const user = userEvent.setup();
-    seedRemote(['Theirs']);
+  it('shows nothing in the synced state — Saved-at display and Export to Sheets are switched off for now', () => {
     setStore({ setupSync: { status: 'saved', savedAt: '2026-02-02T15:04:00.000Z' } });
-    render(<SetupSyncIndicator />);
+    const { container } = render(<SetupSyncIndicator />);
 
-    expect(screen.getByText(/Shared layout/)).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Refresh shared layout' }));
-
-    await waitFor(() => expect(localGarages()).toEqual(['Theirs']));
+    expect(container).toBeEmptyDOMElement();
   });
 });

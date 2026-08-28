@@ -18,45 +18,45 @@ import { Download, Copy, Check, FileCode2, Building2, Layers, ChevronRight, Chev
 // Use locally installed monaco-editor instead of CDN
 loader.config({ monaco });
 
-export default function ConfigEditor({ garages }) {
+export default function ConfigEditor({ sites }) {
   const [activeConfig, setActiveConfig] = useState('devices-all');
   const [copied, setCopied] = useState(false);
   const [edits, setEdits] = useState({}); // { [configKey]: editedContent }
   const [search, setSearch] = useState('');
-  const [collapsedGarages, setCollapsedGarages] = useState({});
+  const [collapsedSites, setCollapsedSites] = useState({});
   const [globalCollapsed, setGlobalCollapsed] = useState(false);
   const mode = useAppStore(s => s.mode);
 
-  // Gather ALL devices across all garages and levels
+  // Gather ALL devices across all sites and levels
   const allDevices = useMemo(() => {
     const devs = [];
-    (garages || []).forEach(g => {
-      (g.levels || []).forEach(l => {
+    (sites || []).forEach(s => {
+      (s.levels || []).forEach(l => {
         (l.devices || []).forEach(d => {
-          devs.push({ ...d, _garageName: g.name, _levelName: l.name });
+          devs.push({ ...d, _siteName: s.name, _levelName: l.name });
         });
       });
     });
     return devs;
-  }, [garages]);
+  }, [sites]);
 
   const allCameras = useMemo(() => allDevices.filter(d => d.type?.startsWith('cam-')), [allDevices]);
   const allFliCameras = useMemo(() => allCameras.filter(d => d.type === 'cam-fli'), [allCameras]);
 
-  // Build per-garage configs too
-  const garageConfigs = useMemo(() => {
-    const gc = [];
-    (garages || []).forEach(g => {
-      const gDevices = [];
-      (g.levels || []).forEach(l => {
-        (l.devices || []).forEach(d => gDevices.push(d));
+  // Build per-site configs too
+  const siteConfigs = useMemo(() => {
+    const sc = [];
+    (sites || []).forEach(s => {
+      const sDevices = [];
+      (s.levels || []).forEach(l => {
+        (l.devices || []).forEach(d => sDevices.push(d));
       });
-      if (gDevices.length > 0) {
-        gc.push({ garage: g, devices: gDevices });
+      if (sDevices.length > 0) {
+        sc.push({ site: s, devices: sDevices });
       }
     });
-    return gc;
-  }, [garages]);
+    return sc;
+  }, [sites]);
 
   const configs = useMemo(() => {
     const cfgs = {};
@@ -68,16 +68,16 @@ export default function ConfigEditor({ garages }) {
     try {
       cfgs['camerahub-all'] = allCameras.length > 0 ? generateCameraHubConfig(allCameras) : '<!-- No cameras configured -->';
     } catch { cfgs['camerahub-all'] = '<!-- Error generating CameraHub config -->'; }
-    // Per-garage configs
-    garageConfigs.forEach(({ garage, devices }) => {
+    // Per-site configs
+    siteConfigs.forEach(({ site, devices }) => {
       const cameras = devices.filter(d => d.type?.startsWith('cam-'));
       try {
-        cfgs[`devices-${garage.id}`] = generateDevicesConfig(devices);
-      } catch { cfgs[`devices-${garage.id}`] = `<!-- Error generating config for ${garage.name} -->`; }
+        cfgs[`devices-${site.id}`] = generateDevicesConfig(devices);
+      } catch { cfgs[`devices-${site.id}`] = `<!-- Error generating config for ${site.name} -->`; }
       if (cameras.length > 0) {
         try {
-          cfgs[`camerahub-${garage.id}`] = generateCameraHubConfig(cameras);
-        } catch { cfgs[`camerahub-${garage.id}`] = `<!-- Error -->`; }
+          cfgs[`camerahub-${site.id}`] = generateCameraHubConfig(cameras);
+        } catch { cfgs[`camerahub-${site.id}`] = `<!-- Error -->`; }
       }
     });
     // Individual FLI camera configs
@@ -88,12 +88,12 @@ export default function ConfigEditor({ garages }) {
     });
     // FLI Global config (site-wide)
     try {
-      const siteName = (garages || [])[0]?.name?.replace(/\s+/g, '') || 'EnsightProject';
+      const siteName = (sites || [])[0]?.name?.replace(/\s+/g, '') || 'EnsightProject';
       cfgs['fli-global'] = generateFLIGlobalConfig({ siteName });
     } catch { cfgs['fli-global'] = '<!-- Error generating FLI Global config -->'; }
 
     return cfgs;
-  }, [allDevices, allCameras, allFliCameras, garageConfigs]);
+  }, [allDevices, allCameras, allFliCameras, siteConfigs]);
 
   const currentContent = edits[activeConfig] ?? configs[activeConfig] ?? '';
   const isEdited = activeConfig in edits;
@@ -117,14 +117,14 @@ export default function ConfigEditor({ garages }) {
     else if (activeConfig === 'fli-global') filename = 'FLI-config.xml';
     else if (activeConfig.startsWith('fli-')) filename = `${activeConfig}.xml`;
     else if (activeConfig.startsWith('devices-')) {
-      const g = garageConfigs.find(gc => `devices-${gc.garage.id}` === activeConfig);
-      filename = g ? `${g.garage.name}-DevicesConfig.xml` : 'DevicesConfig.xml';
+      const s = siteConfigs.find(sc => `devices-${sc.site.id}` === activeConfig);
+      filename = s ? `${s.site.name}-DevicesConfig.xml` : 'DevicesConfig.xml';
     } else if (activeConfig.startsWith('camerahub-')) {
-      const g = garageConfigs.find(gc => `camerahub-${gc.garage.id}` === activeConfig);
-      filename = g ? `${g.garage.name}-CameraHubConfig.xml` : 'CameraHubConfig.xml';
+      const s = siteConfigs.find(sc => `camerahub-${sc.site.id}` === activeConfig);
+      filename = s ? `${s.site.name}-CameraHubConfig.xml` : 'CameraHubConfig.xml';
     }
     downloadConfigFile(currentContent, filename);
-  }, [activeConfig, currentContent, garageConfigs]);
+  }, [activeConfig, currentContent, siteConfigs]);
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(currentContent);
@@ -149,7 +149,7 @@ export default function ConfigEditor({ garages }) {
           <FileCode2 className="w-4 h-4 text-muted-foreground" />
           <h3 className="text-sm font-semibold">Configuration Editor</h3>
           <Badge variant="outline" className="h-5 text-[10px]">
-            {allDevices.length} device{allDevices.length !== 1 ? 's' : ''} across {(garages || []).length} site{(garages || []).length !== 1 ? 's' : ''}
+            {allDevices.length} device{allDevices.length !== 1 ? 's' : ''} across {(sites || []).length} site{(sites || []).length !== 1 ? 's' : ''}
           </Badge>
           {isEdited && (
             <Badge variant="secondary" className="h-5 text-[10px] bg-amber-500/15 text-amber-500" title="Preview edits only — not saved to devices">
@@ -234,21 +234,21 @@ export default function ConfigEditor({ garages }) {
                 </button>
               );
 
-              const renderedGarages = garageConfigs
-                .map(({ garage, devices }) => {
+              const renderedSites = siteConfigs
+                .map(({ site, devices }) => {
                   const cameras = devices.filter(d => d.type?.startsWith('cam-'));
                   const flis = devices.filter(d => d.type === 'cam-fli');
                   const files = [
-                    { key: `devices-${garage.id}`, label: 'DevicesConfig.xml' },
+                    { key: `devices-${site.id}`, label: 'DevicesConfig.xml' },
                   ];
-                  if (cameras.length > 0) files.push({ key: `camerahub-${garage.id}`, label: 'CameraHubConfig.xml' });
+                  if (cameras.length > 0) files.push({ key: `camerahub-${site.id}`, label: 'CameraHubConfig.xml' });
                   flis.forEach(cam => files.push({ key: `fli-${cam.id}`, label: `${cam.name}.xml` }));
-                  const filteredFiles = files.filter(f => matches(f.label) || matches(garage.name));
-                  return { garage, files: filteredFiles };
+                  const filteredFiles = files.filter(f => matches(f.label) || matches(site.name));
+                  return { site, files: filteredFiles };
                 })
-                .filter(g => g.files.length > 0);
+                .filter(s => s.files.length > 0);
 
-              const hasAny = globalFiles.length > 0 || renderedGarages.length > 0;
+              const hasAny = globalFiles.length > 0 || renderedSites.length > 0;
 
               return (
                 <>
@@ -271,18 +271,18 @@ export default function ConfigEditor({ garages }) {
                     </div>
                   )}
 
-                  {renderedGarages.map(({ garage, files }) => {
-                    const isCollapsed = q ? false : !!collapsedGarages[garage.id];
+                  {renderedSites.map(({ site, files }) => {
+                    const isCollapsed = q ? false : !!collapsedSites[site.id];
                     return (
-                      <div key={garage.id} className="mb-2">
+                      <div key={site.id} className="mb-2">
                         <button
-                          onClick={() => setCollapsedGarages(prev => ({ ...prev, [garage.id]: !prev[garage.id] }))}
+                          onClick={() => setCollapsedSites(prev => ({ ...prev, [site.id]: !prev[site.id] }))}
                           className="w-full flex items-center gap-1 px-2 py-1 hover:bg-accent/40 rounded"
-                          title={garage.name}
+                          title={site.name}
                         >
                           {isCollapsed ? <ChevronRight className="w-3 h-3 text-muted-foreground" /> : <ChevronDown className="w-3 h-3 text-muted-foreground" />}
                           <Building2 className="w-3 h-3 text-muted-foreground" />
-                          <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold flex-1 truncate text-left">{garage.name}</p>
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold flex-1 truncate text-left">{site.name}</p>
                           <span className="text-[10px] text-muted-foreground/60">{files.length}</span>
                         </button>
                         {!isCollapsed && (

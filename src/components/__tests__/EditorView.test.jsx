@@ -61,7 +61,6 @@ vi.mock('../AddCameraWizard', () => ({
 }));
 
 vi.mock('../ConfigEditor', () => ({ default: () => <div data-testid="config-editor" /> }));
-vi.mock('../GarageViewer3D', () => ({ default: () => <div data-testid="viewer-3d" /> }));
 vi.mock('../ReportIssueDialog', () => ({ default: (p) => (p.open ? <div data-testid="report-dialog" /> : null) }));
 vi.mock('../AppSettingsDialog', () => ({ default: (p) => (p.open ? <div data-testid="settings-dialog" /> : null) }));
 vi.mock('../../services/ConfigService', () => ({
@@ -85,7 +84,7 @@ function baseLevel(devices = [], zones = []) {
 }
 
 function setStore({ devices = [], zones = [], canSync = true, selected = null } = {}) {
-  const garage = {
+  const site = {
     id: 1, name: 'North', internalName: 'North',
     levels: [baseLevel(devices, zones)],
     displayGroups: [], sensorGroups: [], servers: [], mdfIdfLocations: [],
@@ -94,10 +93,10 @@ function setStore({ devices = [], zones = [], canSync = true, selected = null } 
     customers: [{
       id: CUSTOMER_ID, customerId: 'acme', code: 'ACME', friendlyName: 'Acme',
       ...(canSync ? { spreadsheetId: 'sheet-1' } : {}),
-      garages: [garage], config: {},
+      sites: [site], config: {},
     }],
     selectedCustomerId: CUSTOMER_ID,
-    selectedGarageId: 1,
+    selectedSiteId: 1,
     selectedLevelId: 10,
     // The inspector only mounts for a selected device, which is how its
     // callbacks become reachable.
@@ -110,10 +109,10 @@ function setStore({ devices = [], zones = [], canSync = true, selected = null } 
 
 /** Devices currently on the level, straight from the store. */
 function levelDevices() {
-  return useAppStore.getState().customers[0].garages[0].levels[0].devices;
+  return useAppStore.getState().customers[0].sites[0].levels[0].devices;
 }
 function levelZones() {
-  return useAppStore.getState().customers[0].garages[0].levels[0].zones || [];
+  return useAppStore.getState().customers[0].sites[0].levels[0].zones || [];
 }
 
 beforeEach(() => {
@@ -150,7 +149,7 @@ describe('Add toolbar', () => {
     expect(levelDevices()).toHaveLength(0);
   });
 
-  it.each(SIGN_BUTTONS)('%s adds a sign to the level and syncs it', async (label) => {
+  it.each(SIGN_BUTTONS)('%s adds a sign to the level', async (label) => {
     const user = userEvent.setup();
     render(<EditorView />);
 
@@ -160,19 +159,25 @@ describe('Add toolbar', () => {
     const added = levelDevices()[0];
     expect(added.type).toMatch(/^sign-/);
     expect(added.name).toBeTruthy();
-    await waitFor(() => expect(sync.syncBulkSignsToSheet).toHaveBeenCalled());
+    // Persistence is the store auto-save now — never the legacy sheet sync.
+    expect(sync.syncBulkSignsToSheet).not.toHaveBeenCalled();
   });
 
-  it.each(SENSOR_BUTTONS)('%s adds a sensor to the level and syncs it', async (label) => {
+  it.each(SENSOR_BUTTONS)('%s adds a sensor with a protocol sensor group assigned', async (label) => {
     const user = userEvent.setup();
     render(<EditorView />);
 
     await user.click(screen.getByLabelText(label));
 
     await waitFor(() => expect(levelDevices()).toHaveLength(1));
-    expect(levelDevices()[0].type).toMatch(/^sensor-/);
-    // Sensors sync one at a time so a group can be assigned as they are added.
-    await waitFor(() => expect(sync.syncSensorToSheet).toHaveBeenCalled());
+    const added = levelDevices()[0];
+    expect(added.type).toMatch(/^sensor-/);
+    // The group assignment used to happen inside the sheet-sync path; it must
+    // still happen locally so the sensor lands in a SensorGroups row.
+    expect(added.configSensorGroupId).toBeTruthy();
+    const groups = useAppStore.getState().customers[0].sites[0].sensorGroups;
+    expect(groups.some((g) => g.id === added.configSensorGroupId)).toBe(true);
+    expect(sync.syncSensorToSheet).not.toHaveBeenCalled();
   });
 
   it('gives each added sign a distinct name', async () => {
@@ -199,14 +204,14 @@ describe('Add toolbar', () => {
     expect(poly.linkedLevelId).toBeTruthy();
     expect(poly.name).toBe('Zone 1');
 
-    const allLevels = useAppStore.getState().customers[0].garages[0].levels;
+    const allLevels = useAppStore.getState().customers[0].sites[0].levels;
     const zoneLevel = allLevels.find((l) => l.id === poly.linkedLevelId);
     expect(zoneLevel).toMatchObject({
       name: 'Zone 1',
       isZone: true,
       parentLevelId: 10,
     });
-    await waitFor(() => expect(sync.syncGarageLevelsToSheet).toHaveBeenCalled());
+    expect(sync.syncGarageLevelsToSheet).not.toHaveBeenCalled();
   });
 });
 
@@ -226,15 +231,14 @@ describe('device update and delete', () => {
     await waitFor(() => expect(levelDevices()[0].ipAddress).toBe('10.9.9.9'));
   });
 
-  it('UPDATE with syncToSheet pushes the camera to the sheet', async () => {
+  it('UPDATE never touches the legacy sheet sync, even with syncToSheet', async () => {
     setStore({ devices: [CAMERA], selected: CAMERA });
     render(<EditorView />);
 
     await harness.inspector.onUpdateDevice('cam-1', { ipAddress: '10.9.9.9' }, { syncToSheet: true });
 
-    await waitFor(() => expect(sync.syncCameraToSheet).toHaveBeenCalled());
-    const call = sync.syncCameraToSheet.mock.calls.at(-1)[0];
-    expect(call.device.ipAddress).toBe('10.9.9.9');
+    await waitFor(() => expect(levelDevices()[0].ipAddress).toBe('10.9.9.9'));
+    expect(sync.syncCameraToSheet).not.toHaveBeenCalled();
   });
 
   it('DELETE asks for confirmation before removing anything', async () => {
@@ -248,7 +252,7 @@ describe('device update and delete', () => {
     expect(levelDevices()).toHaveLength(1);
   });
 
-  it('DELETE removes the device and clears it from the sheet once confirmed', async () => {
+  it('DELETE removes the device once confirmed', async () => {
     const user = userEvent.setup();
     setStore({ devices: [CAMERA], selected: CAMERA });
     render(<EditorView />);
@@ -258,7 +262,7 @@ describe('device update and delete', () => {
     await user.click(screen.getByRole('button', { name: /^confirm$/i }));
 
     await waitFor(() => expect(levelDevices()).toHaveLength(0));
-    await waitFor(() => expect(sync.deleteCameraFromSheet).toHaveBeenCalled());
+    expect(sync.deleteCameraFromSheet).not.toHaveBeenCalled();
   });
 
   it('UNPLACE keeps the device but takes it off the map', async () => {
@@ -275,34 +279,34 @@ describe('device update and delete', () => {
     expect(sync.deleteCameraFromSheet).not.toHaveBeenCalled();
   });
 
-  it('a sign delete goes to the sign tabs, not the camera ones', async () => {
+  it('deleting a sensor prunes its now-unused sensor group', async () => {
     const user = userEvent.setup();
-    const signDevice = { id: 's-1', type: 'sign-static', name: 'S1.1', x: 1, y: 1 };
-    setStore({ devices: [signDevice], selected: signDevice });
-    render(<EditorView />);
-
-    harness.inspector.onDeleteDevice('s-1');
-    await waitFor(() => expect(screen.getByText(/permanently delete/i)).toBeTruthy());
-    await user.click(screen.getByRole('button', { name: /^confirm$/i }));
-
-    await waitFor(() => expect(sync.deleteSignFromSheet).toHaveBeenCalled());
-    expect(sync.deleteCameraFromSheet).not.toHaveBeenCalled();
-  });
-
-  it('a sensor delete goes to the sensor tabs', async () => {
-    const user = userEvent.setup();
-    const sensorDevice = { id: 'sen-1', type: 'sensor-nwave', name: 'SEN-1', x: 1, y: 1 };
+    const sensorDevice = {
+      id: 'sen-1', type: 'sensor-nwave', name: 'SEN-1', x: 1, y: 1,
+      configSensorGroupId: 'grp-1',
+    };
     setStore({ devices: [sensorDevice], selected: sensorDevice });
+    useAppStore.setState((state) => ({
+      customers: state.customers.map((c) => ({
+        ...c,
+        sites: c.sites.map((g) => ({
+          ...g,
+          sensorGroups: [{ id: 'grp-1', groupId: 'NWAVE', sensorProtocol: 'NWAVE' }],
+        })),
+      })),
+    }));
     render(<EditorView />);
 
     harness.inspector.onDeleteDevice('sen-1');
     await waitFor(() => expect(screen.getByText(/permanently delete/i)).toBeTruthy());
     await user.click(screen.getByRole('button', { name: /^confirm$/i }));
 
-    await waitFor(() => expect(sync.deleteSensorFromSheet).toHaveBeenCalled());
+    await waitFor(() => expect(levelDevices()).toHaveLength(0));
+    const groups = useAppStore.getState().customers[0].sites[0].sensorGroups;
+    expect(groups).toHaveLength(0);
   });
 
-  it('bulk delete removes selected devices and clears them from the sheet', async () => {
+  it('bulk delete removes every selected device', async () => {
     const user = userEvent.setup();
     const devices = [
       { id: 'cam-1', type: 'cam-fli', name: '1.1F', x: 10, y: 20, pendingPlacement: false },
@@ -320,10 +324,7 @@ describe('device update and delete', () => {
     await user.click(screen.getByRole('button', { name: /^confirm$/i }));
 
     await waitFor(() => expect(levelDevices()).toHaveLength(0));
-    await waitFor(() => expect(sync.deleteDevicesFromSheet).toHaveBeenCalled());
-    const sheetCalls = sync.deleteDevicesFromSheet.mock.calls.map((c) => c[0].devices.map((d) => d.id).sort());
-    expect(sheetCalls.some((ids) => ids.includes('cam-1') && ids.includes('s-1'))).toBe(true);
-    expect(sheetCalls.some((ids) => ids.includes('sen-1'))).toBe(true);
+    expect(sync.deleteDevicesFromSheet).not.toHaveBeenCalled();
   });
 });
 
@@ -376,7 +377,7 @@ describe('zones', () => {
     await harness.canvas.onUpdateZone(zone.id, { name: 'Renamed Zone' });
 
     await waitFor(() => expect(levelZones()[0].name).toBe('Renamed Zone'));
-    const zoneLevel = useAppStore.getState().customers[0].garages[0].levels
+    const zoneLevel = useAppStore.getState().customers[0].sites[0].levels
       .find((l) => l.id === zone.linkedLevelId);
     expect(zoneLevel?.name).toBe('Renamed Zone');
   });
@@ -420,16 +421,6 @@ describe('toolbar', () => {
     await user.click(screen.getByLabelText('Report issue or request'));
 
     await waitFor(() => expect(screen.getByTestId('report-dialog')).toBeTruthy());
-  });
-
-  it('toggles the theme', async () => {
-    const user = userEvent.setup();
-    render(<EditorView />);
-    const before = useAppStore.getState().mode;
-
-    await user.click(screen.getByTitle('Toggle theme'));
-
-    await waitFor(() => expect(useAppStore.getState().mode).not.toBe(before));
   });
 
   it('goes back to the customer list', async () => {

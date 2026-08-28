@@ -6,11 +6,8 @@ import {
   validateLayoutPayload,
   parseLayoutJson,
   layoutFilename,
-  setupJsonChunksFromPayload,
-  setupContentHash,
   setupJsonPayloadFromRows,
   validateSetupJsonChunkRows,
-  encodeSetupJsonChunkData,
   decodeSetupJsonChunkData,
 } from './LayoutPersistenceService';
 
@@ -20,7 +17,7 @@ const sampleCustomer = {
   code: 'SHC',
   friendlyName: 'Sample Hospital',
   config: { address: '1 Main St', city: 'Boston', state: 'MA', zip: '02101', mapsUrl: '' },
-  garages: [{
+  sites: [{
     id: 10,
     name: 'Garage A',
     levels: [{
@@ -41,16 +38,37 @@ const sampleCustomer = {
   }],
 };
 
+/**
+ * Build SetupJson chunk rows by hand, the way an old (pre-Supabase) sheet write
+ * once did — used only to exercise the read path this service still supports
+ * for OpenConfigFromDriveService.js's legacy-import flow.
+ */
+function chunkPayloadForTest(payload, chunkSize = 40000) {
+  const json = JSON.stringify(payload);
+  const chunks = [];
+  for (let i = 0; i < json.length; i += chunkSize) chunks.push(json.slice(i, i + chunkSize));
+  const dataChunks = chunks.length ? chunks : ['{}'];
+  return [
+    ['ChunkIndex', 'ChunkTotal', 'Data', 'SavedAt', 'PayloadHash'],
+    ...dataChunks.map((data, index) => [
+      index,
+      dataChunks.length,
+      `${SETUP_JSON_CHUNK_DATA_PREFIX}${data}`,
+      ...(index === 0 ? [payload.savedAt, 'test-hash'] : []),
+    ]),
+  ];
+}
+
 describe('serializeCustomerLayout', () => {
-  it('produces a versioned payload with garages', () => {
+  it('produces a versioned payload with sites', () => {
     const payload = serializeCustomerLayout(sampleCustomer, {
-      navigation: { garageId: 10, levelId: 100 },
+      navigation: { siteId: 10, levelId: 100 },
     });
     expect(payload.schemaVersion).toBe(LAYOUT_SCHEMA_VERSION);
-    expect(payload.customer.garages).toHaveLength(1);
-    expect(payload.customer.garages[0].levels[0].devices[0].x).toBe(120);
-    expect(payload.navigation).toEqual({ garageId: 10, levelId: 100 });
-    expect(payload.customer.garages[0].levels[0].bgImage).toBe('data:image/png;base64,abc');
+    expect(payload.customer.sites).toHaveLength(1);
+    expect(payload.customer.sites[0].levels[0].devices[0].x).toBe(120);
+    expect(payload.navigation).toEqual({ siteId: 10, levelId: 100 });
+    expect(payload.customer.sites[0].levels[0].bgImage).toBe('data:image/png;base64,abc');
   });
 
   it('throws when customer is missing', () => {
@@ -62,20 +80,20 @@ describe('validateLayoutPayload / parseLayoutJson', () => {
   it('round-trips through JSON text', () => {
     const payload = serializeCustomerLayout(sampleCustomer);
     const parsed = parseLayoutJson(JSON.stringify(payload));
-    expect(parsed.customer.garages[0].levels[0].devices[0].rotation).toBe(90);
+    expect(parsed.customer.sites[0].levels[0].devices[0].rotation).toBe(90);
     expect(parsed.navigation).toBeNull();
   });
 
   it('rejects unsupported schema version', () => {
-    expect(() => validateLayoutPayload({ schemaVersion: 99, customer: { garages: [] } }))
+    expect(() => validateLayoutPayload({ schemaVersion: 99, customer: { sites: [] } }))
       .toThrow(/Unsupported setup version/);
   });
 
-  it('rejects missing garages array', () => {
+  it('rejects missing sites array', () => {
     expect(() => validateLayoutPayload({
       schemaVersion: LAYOUT_SCHEMA_VERSION,
       customer: {},
-    })).toThrow(/garages must be an array/);
+    })).toThrow(/sites must be an array/);
   });
 });
 
@@ -85,47 +103,46 @@ describe('layoutFilename', () => {
   });
 });
 
-describe('setupJsonChunksFromPayload / setupJsonPayloadFromRows', () => {
+// Read-side coverage for OpenConfigFromDriveService.js's legacy-import flow —
+// this service no longer writes SetupJson chunks (Supabase is the source of
+// truth), but it still reads them out of an old Drive-linked spreadsheet.
+describe('setupJsonPayloadFromRows (legacy read path)', () => {
   it('round-trips through chunked sheet rows', () => {
     const payload = serializeCustomerLayout(sampleCustomer);
-    const rows = setupJsonChunksFromPayload(payload);
-    expect(rows[0]).toEqual(['ChunkIndex', 'ChunkTotal', 'Data', 'SavedAt', 'PayloadHash']);
-    // The revision rides on the first data row so it can be read on its own.
-    expect(rows[1][3]).toBe(payload.savedAt);
-    expect(rows[1][4]).toBe(setupContentHash(payload));
+    const rows = chunkPayloadForTest(payload);
     const parsed = setupJsonPayloadFromRows(rows);
-    expect(parsed?.customer.garages[0].levels[0].devices[0].x).toBe(120);
+    expect(parsed?.customer.sites[0].levels[0].devices[0].x).toBe(120);
   });
 
   it('handles large payloads across multiple chunks', () => {
     const bigCustomer = {
       ...sampleCustomer,
-      garages: [{
-        ...sampleCustomer.garages[0],
+      sites: [{
+        ...sampleCustomer.sites[0],
         levels: [{
-          ...sampleCustomer.garages[0].levels[0],
+          ...sampleCustomer.sites[0].levels[0],
           bgImage: `data:image/png;base64,${'A'.repeat(50000)}`,
         }],
       }],
     };
-    const rows = setupJsonChunksFromPayload(serializeCustomerLayout(bigCustomer));
+    const rows = chunkPayloadForTest(serializeCustomerLayout(bigCustomer));
     expect(rows.length).toBeGreaterThan(2);
     const parsed = setupJsonPayloadFromRows(rows);
-    expect(parsed?.customer.garages[0].levels[0].bgImage.length).toBeGreaterThan(50000);
+    expect(parsed?.customer.sites[0].levels[0].bgImage.length).toBeGreaterThan(50000);
   });
 
   it('rejects incomplete chunk sets', () => {
     const bigCustomer = {
       ...sampleCustomer,
-      garages: [{
-        ...sampleCustomer.garages[0],
+      sites: [{
+        ...sampleCustomer.sites[0],
         levels: [{
-          ...sampleCustomer.garages[0].levels[0],
+          ...sampleCustomer.sites[0].levels[0],
           bgImage: `data:image/png;base64,${'A'.repeat(50000)}`,
         }],
       }],
     };
-    const rows = setupJsonChunksFromPayload(serializeCustomerLayout(bigCustomer));
+    const rows = chunkPayloadForTest(serializeCustomerLayout(bigCustomer));
     expect(rows.length).toBeGreaterThan(2);
     const incomplete = [rows[0], rows[1]];
     expect(() => validateSetupJsonChunkRows(incomplete)).toThrow(/incomplete/i);
@@ -153,12 +170,7 @@ describe('setupJsonChunksFromPayload / setupJsonPayloadFromRows', () => {
     expect(() => setupJsonPayloadFromRows(rows)).toThrow(/corrupted by the spreadsheet/i);
   });
 
-  it('prefixes chunk data so leading +/= cannot become sheet formulas', () => {
-    const payload = serializeCustomerLayout(sampleCustomer);
-    const rows = setupJsonChunksFromPayload(payload);
-    const dataCell = String(rows[1][2]);
-    expect(dataCell.startsWith(SETUP_JSON_CHUNK_DATA_PREFIX)).toBe(true);
-    expect(encodeSetupJsonChunkData('+base64Chunk')).toBe(`${SETUP_JSON_CHUNK_DATA_PREFIX}+base64Chunk`);
+  it('decodes the SJ1: prefix used to stop leading +/= from becoming sheet formulas', () => {
     expect(decodeSetupJsonChunkData(`${SETUP_JSON_CHUNK_DATA_PREFIX}+base64Chunk`)).toBe('+base64Chunk');
     expect(decodeSetupJsonChunkData('{"legacy":true}')).toBe('{"legacy":true}');
   });
@@ -166,22 +178,16 @@ describe('setupJsonChunksFromPayload / setupJsonPayloadFromRows', () => {
   it('round-trips payloads that include formula-leading + inside base64', () => {
     const bigCustomer = {
       ...sampleCustomer,
-      garages: [{
-        ...sampleCustomer.garages[0],
+      sites: [{
+        ...sampleCustomer.sites[0],
         levels: [{
-          ...sampleCustomer.garages[0].levels[0],
+          ...sampleCustomer.sites[0].levels[0],
           bgImage: `data:image/png;base64,${'A'.repeat(50000)}+KEEP_PLUS${'B'.repeat(1000)}`,
         }],
       }],
     };
-    const rows = setupJsonChunksFromPayload(serializeCustomerLayout(bigCustomer));
-    expect(rows.slice(1).every((row) => String(row[2]).startsWith(SETUP_JSON_CHUNK_DATA_PREFIX))).toBe(true);
-    // Simulate Sheets USER_ENTERED: unprefixed "+..." would become #ERROR!; prefixed stays text.
-    const plusLed = rows.slice(1).find((row) => decodeSetupJsonChunkData(row[2]).startsWith('+'));
-    if (plusLed) {
-      expect(String(plusLed[2]).startsWith(`${SETUP_JSON_CHUNK_DATA_PREFIX}+`)).toBe(true);
-    }
+    const rows = chunkPayloadForTest(serializeCustomerLayout(bigCustomer));
     const parsed = setupJsonPayloadFromRows(rows);
-    expect(parsed?.customer.garages[0].levels[0].bgImage).toContain('+KEEP_PLUS');
+    expect(parsed?.customer.sites[0].levels[0].bgImage).toContain('+KEEP_PLUS');
   });
 });

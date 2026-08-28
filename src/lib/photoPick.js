@@ -1,33 +1,32 @@
 /**
- * Device photo helpers for SetupJson (sign photos, camera view images).
+ * Device photo helpers (sign photos, camera view images).
  *
- * Same failure mode as floor plans: full-size phone photos are base64-embedded
- * in the shared snapshot and can blow past the Sheets write limit. Compress on
- * ingest and again before save for anything already stored oversized.
+ * Photos upload as Blobs to the `device-photos` Supabase Storage bucket (see
+ * ImageUploadService) — the row only stores the resulting object path, so there's
+ * no more Sheets-cell size ceiling to protect. Still compressed to a byte budget
+ * so uploads/renders stay fast on a slow connection.
  */
 
-import { approxDataUrlBytes } from './floorPlanBackground';
+/** Per-photo byte budget. Smaller than floor plans — these are reference shots, not map backgrounds. */
+export const MAX_DEVICE_PHOTO_BYTES = 500_000;
 
-/**
- * Per-photo budget in data-URL characters (~110 KB encoded).
- * Smaller than floor plans — these are reference shots, not map backgrounds.
- */
+/** @deprecated Kept only for the legacy data-URL safety net (see compressOversizedDevicePhotos). */
 export const MAX_DEVICE_PHOTO_DATA_URL_CHARS = 150_000;
 
 /** Longest edge after resize. */
-export const MAX_DEVICE_PHOTO_EDGE = 1280;
+export const MAX_DEVICE_PHOTO_EDGE = 1600;
 
-/** Cap sign photos so one monument cannot fill the whole SetupJson payload. */
+/** Cap sign photos so one monument cannot fill the whole layout with photos. */
 export const MAX_SIGN_PHOTOS = 10;
 
 /** Reject absurd source files before decoding (bytes). */
 export const MAX_DEVICE_PHOTO_SOURCE_BYTES = 20 * 1024 * 1024;
 
 const ENCODE_STEPS = Object.freeze([
-  { edge: MAX_DEVICE_PHOTO_EDGE, quality: 0.82 },
-  { edge: MAX_DEVICE_PHOTO_EDGE, quality: 0.7 },
-  { edge: 960, quality: 0.65 },
-  { edge: 720, quality: 0.55 },
+  { edge: MAX_DEVICE_PHOTO_EDGE, quality: 0.85 },
+  { edge: MAX_DEVICE_PHOTO_EDGE, quality: 0.72 },
+  { edge: 1200, quality: 0.65 },
+  { edge: 900, quality: 0.55 },
 ]);
 
 /**
@@ -51,17 +50,9 @@ export function devicePhotoDataUrlChars(dataUrl) {
   return typeof dataUrl === 'string' ? dataUrl.length : 0;
 }
 
+/** @deprecated Only meaningful for legacy inline data-URL photos carried over by import. */
 export function isOversizedDevicePhoto(dataUrl) {
   return devicePhotoDataUrlChars(dataUrl) > MAX_DEVICE_PHOTO_DATA_URL_CHARS;
-}
-
-function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
-    reader.readAsDataURL(file);
-  });
 }
 
 function loadImageElement(src) {
@@ -86,14 +77,23 @@ function drawScaled(source, width, height) {
   return canvas;
 }
 
-function encodeLossy(source, width, height, quality) {
-  const canvas = drawScaled(source, width, height);
-  const webp = canvas.toDataURL('image/webp', quality);
-  if (webp.startsWith('data:image/webp')) return webp;
-  return canvas.toDataURL('image/jpeg', quality);
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('Could not encode photo.'));
+    }, type, quality);
+  });
 }
 
-function encodeWithinBudget(source, sourceWidth, sourceHeight) {
+async function encodeLossyBlob(source, width, height, quality) {
+  const canvas = drawScaled(source, width, height);
+  const webp = await canvasToBlob(canvas, 'image/webp', quality);
+  if (webp.type === 'image/webp') return webp;
+  return canvasToBlob(canvas, 'image/jpeg', quality);
+}
+
+async function encodeWithinBudget(source, sourceWidth, sourceHeight) {
   const width = Math.max(1, sourceWidth || MAX_DEVICE_PHOTO_EDGE);
   const height = Math.max(1, sourceHeight || Math.round(width * 0.75));
   const longest = Math.max(width, height);
@@ -104,32 +104,40 @@ function encodeWithinBudget(source, sourceWidth, sourceHeight) {
     const scale = Math.min(1, step.edge / longest);
     const stepWidth = Math.max(1, Math.round(width * scale));
     const stepHeight = Math.max(1, Math.round(stepWidth * aspect));
-    const encoded = encodeLossy(source, stepWidth, stepHeight, step.quality);
-    if (encoded.length <= MAX_DEVICE_PHOTO_DATA_URL_CHARS) return encoded;
-    if (!smallest || encoded.length < smallest.length) smallest = encoded;
+    const encoded = await encodeLossyBlob(source, stepWidth, stepHeight, step.quality);
+    if (encoded.size <= MAX_DEVICE_PHOTO_BYTES) return encoded;
+    if (!smallest || encoded.size < smallest.size) smallest = encoded;
   }
   return smallest;
 }
 
 /**
- * Shrink an already-stored photo that exceeds the budget.
+ * @deprecated Legacy safety net for data-URL photos carried over by JSON import. New photos
+ * are uploaded as Storage blobs (see prepareDevicePhotoFromFile) and never take this path.
  * @param {string} dataUrl
  * @returns {Promise<string>}
  */
 export async function compressDevicePhotoDataUrl(dataUrl) {
   if (!isOversizedDevicePhoto(dataUrl)) return dataUrl;
   const img = await loadImageElement(dataUrl);
-  const encoded = encodeWithinBudget(
+  const blob = await encodeWithinBudget(
     img,
     img.naturalWidth || img.width,
     img.naturalHeight || img.height,
   );
+  if (!blob) return dataUrl;
+  const encoded = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to re-encode photo.'));
+    reader.readAsDataURL(blob);
+  });
   return encoded && encoded.length < dataUrl.length ? encoded : dataUrl;
 }
 
 /**
- * Compress one image File for SetupJson storage.
- * @returns {Promise<{ dataUrl: string, compressed: boolean, originalBytes?: number, compressedBytes?: number }>}
+ * Compress one image File for Storage upload.
+ * @returns {Promise<{ blob: Blob, compressed: boolean, originalBytes?: number, compressedBytes?: number }>}
  */
 export async function prepareDevicePhotoFromFile(file) {
   if (!file || !String(file.type || '').startsWith('image/')) {
@@ -139,25 +147,28 @@ export async function prepareDevicePhotoFromFile(file) {
     throw new Error('Photo is too large. Please use an image under 20 MB.');
   }
 
-  const original = await readFileAsDataUrl(file);
-  if (!isOversizedDevicePhoto(original)) {
-    return { dataUrl: original, compressed: false };
-  }
-
-  const img = await loadImageElement(original);
-  const dataUrl = encodeWithinBudget(
+  const originalBytes = file.size;
+  const src = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('Failed to read image'));
+    reader.readAsDataURL(file);
+  });
+  const img = await loadImageElement(src);
+  const blob = await encodeWithinBudget(
     img,
     img.naturalWidth || img.width,
     img.naturalHeight || img.height,
   );
-  if (!dataUrl || dataUrl.length >= original.length) {
-    return { dataUrl: original, compressed: false };
+
+  if (!blob || blob.size >= originalBytes) {
+    return { blob: blob || file, compressed: false };
   }
   return {
-    dataUrl,
+    blob,
     compressed: true,
-    originalBytes: approxDataUrlBytes(original),
-    compressedBytes: approxDataUrlBytes(dataUrl),
+    originalBytes,
+    compressedBytes: blob.size,
   };
 }
 
@@ -189,30 +200,32 @@ export function readImageFilesAsDataUrls(files = []) {
 }
 
 /**
- * Recompress oversized device photos (viewImage + signImages) before SetupJson save.
- * @param {object[]} garages
+ * @deprecated Recompress legacy inline (data-URL) device photos before a shared save. Only
+ * relevant for setups restored from an old JSON export/import; the live Storage-backed upload
+ * path never produces oversized inline data, so this is a no-op for normal usage.
+ * @param {object[]} sites
  * @param {{ compress?: (dataUrl: string) => Promise<string> }} [options]
  */
-export async function compressOversizedDevicePhotos(garages, options = {}) {
+export async function compressOversizedDevicePhotos(sites, options = {}) {
   const compress = options.compress || compressDevicePhotoDataUrl;
-  if (!Array.isArray(garages)) return { garages, compressed: 0, savedChars: 0 };
+  if (!Array.isArray(sites)) return { sites, compressed: 0, savedChars: 0 };
 
-  const needsWork = garages.some((garage) => (garage?.levels ?? []).some((level) => (
+  const needsWork = sites.some((site) => (site?.levels ?? []).some((level) => (
     (level?.devices ?? []).some((device) => (
       isOversizedDevicePhoto(device?.viewImage)
       || (Array.isArray(device?.signImages) && device.signImages.some(isOversizedDevicePhoto))
     ))
   )));
-  if (!needsWork) return { garages, compressed: 0, savedChars: 0 };
+  if (!needsWork) return { sites, compressed: 0, savedChars: 0 };
 
   let compressed = 0;
   let savedChars = 0;
-  const nextGarages = [];
+  const nextSites = [];
 
-  for (const garage of garages) {
-    const levels = garage?.levels;
+  for (const site of sites) {
+    const levels = site?.levels;
     if (!Array.isArray(levels)) {
-      nextGarages.push(garage);
+      nextSites.push(site);
       continue;
     }
 
@@ -278,12 +291,12 @@ export async function compressOversizedDevicePhotos(garages, options = {}) {
 
       nextLevels.push(levelChanged ? { ...level, devices: nextDevices } : level);
     }
-    nextGarages.push(
+    nextSites.push(
       nextLevels.some((level, i) => level !== levels[i])
-        ? { ...garage, levels: nextLevels }
-        : garage,
+        ? { ...site, levels: nextLevels }
+        : site,
     );
   }
 
-  return { garages: nextGarages, compressed, savedChars };
+  return { sites: nextSites, compressed, savedChars };
 }

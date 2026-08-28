@@ -10,7 +10,7 @@
 
 import * as XLSX from 'xlsx';
 import { DISPLAY_GROUP_DEFAULT_FORCE_SEND_SECONDS } from '../lib/configSheetSchema';
-import { countGaragesDevices } from '../lib/deviceCountUtils';
+import { countSitesDevices } from '../lib/deviceCountUtils';
 import { nextSignName } from '../lib/deviceNamingUtils';
 import { createSignInsert, groupDisplayControllersByMonument } from '../lib/signInserts';
 import { normalizeTrafficDirection } from '../lib/trafficFlowUtils';
@@ -161,9 +161,8 @@ export function serversFromNetworkingRows(networkingRows = []) {
       name,
       type: mapNetworkingDeviceToServerType(device),
       manufacturer,
-      os: 'Windows Server 2022',
-      ram: '',
-      ssd: '',
+      os: 'Windows',
+      model: '',
       ports: [{
         mac,
         ip,
@@ -236,7 +235,7 @@ function buildSignDeviceFromDisplayRow(dl, index, controller, garageId, displayL
     levelDisplayName: str(dl.LevelName),
     displayLevelAll: displayLevelAll,
     displayLevelIds: displayLevelIds,
-    displayGarageId: garageId,
+    displaySiteId: garageId,
     pendingPlacement: true,
   };
 }
@@ -373,7 +372,7 @@ function attachDisplaySignsForGarage({
       keepLevelCountsSeparate: bool(controllerMeta.KeepLevelCountsSeparate),
       displayLevelAll: false,
       displayLevelIds: [firstPlaceLevel.id],
-      displayGarageId: garageId,
+      displaySiteId: garageId,
       inserts,
       pendingPlacement: true,
     };
@@ -721,24 +720,26 @@ export function parseExcelFile(buffer) {
     sheets,
   };
 
-  return { garages, rawData, sheetNames, importStats };
+  // `sites` is the app-boundary field name (see customer.sites elsewhere);
+  // `rawData.garages` above stays as the literal Excel "Garages" tab snapshot.
+  return { sites: garages, rawData, sheetNames, importStats };
 }
 
 /**
  * Get a summary of what was parsed from the Excel file.
  *
- * @param {{ garages: Array, rawData: Object }} parsed
- * @returns {{ totalGarages: number, totalLevels: number, totalDevices: number, tabCounts: Object }}
+ * @param {{ sites: Array, rawData: Object }} parsed
+ * @returns {{ totalSites: number, totalLevels: number, totalDevices: number, tabCounts: Object }}
  */
 export function getImportSummary(parsed) {
-  const { garages, rawData } = parsed;
+  const { sites, rawData } = parsed;
   let totalLevels = 0;
 
-  garages.forEach((g) => {
-    totalLevels += g.levels.length;
+  sites.forEach((s) => {
+    totalLevels += s.levels.length;
   });
 
-  const totalDevices = countGaragesDevices(garages);
+  const totalDevices = countSitesDevices(sites);
 
   const tabCounts = {};
   for (const [key, arr] of Object.entries(rawData)) {
@@ -746,7 +747,7 @@ export function getImportSummary(parsed) {
   }
 
   return {
-    totalGarages: garages.length,
+    totalSites: sites.length,
     totalLevels,
     totalDevices,
     tabCounts,

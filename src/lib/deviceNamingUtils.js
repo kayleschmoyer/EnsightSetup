@@ -31,7 +31,7 @@ export function isDualLensCamera(device) {
 
 /**
  * Human level number for device IDs (1.1F, S1.1) — not the internal level.id.
- * Prefer sheet ordinals, then majority of existing device names, then garage order.
+ * Prefer sheet ordinals, then majority of existing device names, then site order.
  */
 export function getLevelNamingNumber(level, levels = []) {
   if (!level) return 1;

@@ -1,5 +1,13 @@
 /**
- * GoogleSheetsService - Native Google Sheets API operations.
+ * GoogleSheetsService - Native Google Sheets API operations, using the signed-in
+ * user's browser OAuth token (see GoogleDriveService.js).
+ *
+ * Supabase is the app's source of truth now, and the "Export to Sheets" feature
+ * runs server-side with its own Google service-account auth (api/export-to-sheets.js
+ * talks to the Sheets/Drive REST APIs directly, not through this module, since it
+ * needs a Node-safe client with no import.meta.env). What's left here is what the
+ * optional/deferred "import a customer from an old Drive-linked spreadsheet" admin
+ * flow (OpenConfigFromDriveService.js) still needs to read that old spreadsheet.
  */
 import {
   getAccessToken,
@@ -650,77 +658,6 @@ export async function deleteSpreadsheetTab(spreadsheetId, tabName, options = {})
     signal: options.signal,
   });
   return true;
-}
-
-/**
- * Replace a tab's entire contents atomically, at any payload size.
- *
- * A large payload cannot be written in one request — Google rejects anything
- * over 10 MB, and a SetupJson carrying twenty floor plans is around that. Split
- * across several requests, a failure part-way leaves the tab holding a mix of
- * old and new chunks, which fails validation on every later read: the tab is
- * unreadable until some future save happens to succeed.
- *
- * So the payload is staged in a scratch tab (where a failure harms nothing) and
- * only then swapped in by a single batchUpdate that deletes the live tab and
- * renames the staging tab over it. That swap is one atomic metadata operation
- * regardless of payload size, so a reader sees the whole old snapshot or the
- * whole new one — never a mix.
- *
- * @param {string} spreadsheetId
- * @param {string} tabName
- * @param {any[][]} values
- * @param {{ stagingTabName?: string, verify?: (rows: any[][]) => void,
- *           signal?: AbortSignal, valueInputOption?: 'USER_ENTERED' | 'RAW' }} [options]
- */
-export async function replaceTabAtomically(spreadsheetId, tabName, values, options = {}) {
-  if (!values?.length) return;
-  const staging = options.stagingTabName || `${tabName}__staging`;
-  const { signal } = options;
-
-  // A staging tab left behind by an interrupted save is stale by definition.
-  await deleteSpreadsheetTab(spreadsheetId, staging, { signal });
-  await ensureSpreadsheetTab(spreadsheetId, staging);
-
-  try {
-    await writeTabValues(spreadsheetId, staging, values, {
-      signal,
-      valueInputOption: options.valueInputOption,
-    });
-
-    if (options.verify) {
-      // Read back what actually landed before letting it become the live tab.
-      options.verify(await readTabValues(spreadsheetId, staging));
-    }
-
-    const meta = await getSpreadsheet(spreadsheetId, { signal });
-    const sheets = meta.sheets || [];
-    const stagingId = sheets.find((s) => s.properties?.title === staging)?.properties?.sheetId;
-    const liveId = sheets.find((s) => s.properties?.title === tabName)?.properties?.sheetId;
-    if (stagingId == null) throw new Error('Staging tab disappeared during save.');
-
-    const requests = [];
-    // Ordered: the live tab is gone before the rename, so the names never clash.
-    if (liveId != null) requests.push({ deleteSheet: { sheetId: liveId } });
-    requests.push({
-      updateSheetProperties: {
-        properties: { sheetId: stagingId, title: tabName },
-        fields: 'title',
-      },
-    });
-
-    await sheetsFetch(`/${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
-      method: 'POST',
-      body: JSON.stringify({ requests }),
-      signal,
-    });
-  } catch (err) {
-    // Never leave a half-written scratch tab lying around.
-    try {
-      await deleteSpreadsheetTab(spreadsheetId, staging);
-    } catch { /* surface the original failure */ }
-    throw err;
-  }
 }
 
 /**

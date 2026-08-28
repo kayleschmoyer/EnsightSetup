@@ -11,7 +11,7 @@ import {
 } from './signInserts';
 
 describe('signInserts', () => {
-  const garages = [{
+  const sites = [{
     id: 1,
     name: 'Vanderbilt',
     internalName: 'Vanderbilt',
@@ -56,7 +56,7 @@ describe('signInserts', () => {
     const device = {
       type: 'sign-static',
       name: 'S1.1',
-      displayGarageId: 1,
+      displaySiteId: 1,
       inserts: [
         createSignInsert({
           displayName: 'ENS-G1-1.1',
@@ -69,7 +69,7 @@ describe('signInserts', () => {
       ],
     };
 
-    const rows = buildSignDisplayLevelSheetRows(device, garages);
+    const rows = buildSignDisplayLevelSheetRows(device, sites);
     expect(rows).toHaveLength(2);
     expect(rows[0][0]).toBe('ENS-G1-1.1');
     expect(rows[0][2]).toBe('Level 1');

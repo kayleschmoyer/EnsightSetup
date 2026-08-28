@@ -290,7 +290,7 @@ export const parseCameraHubConfig = (xmlContent) => {
             externalUrl: rtspUrl,
             direction: 'in',
             rotation: 0,
-            flowDestination: 'garage-entry'
+            flowDestination: 'site-entry'
           },
           // No x,y coordinates - device is pending placement on canvas
           pendingPlacement: true
@@ -309,16 +309,18 @@ export const parseCameraHubConfig = (xmlContent) => {
 
 /**
  * Generate Epic Configuration.xml content
- * @param {Array} garages - All garages with their levels and devices
+ * @param {Array} sites - All sites with their levels and devices
  * @param {Object} options - Optional overrides: { projectName, country, apiKey, apiHost }
  */
-export const generateEpicConfiguration = (garages, options = {}) => {
+export const generateEpicConfiguration = (sites, options = {}) => {
   const projectName = options.projectName || 'EnsightProject';
   const country = options.country || 'US';
   const apiHost = options.apiHost || 'https://data.ensightful.io/v1';
   const apiKey = options.apiKey || 'yRX9QAUNl3aTIMjtK4g5x8rTvkOeUl1KaloJnPCz';
 
-  const garageElements = garages.map(g => {
+  // XML element names below (Garages/Garage) are the fixed Epic/Ensight backend
+  // config contract — not renamed, even though the JS-side vocabulary is "site".
+  const garageElements = sites.map(g => {
     const levels = Array.isArray(g.levels) ? g.levels : [];
 
     const parkingLevelElements = levels.map(lvl => {
@@ -597,7 +599,7 @@ export const parseDevicesConfig = (xmlContent) => {
             port,
             direction: 'in',
             rotation: 0,
-            flowDestination: 'garage-entry'
+            flowDestination: 'site-entry'
           },
           // No x,y coordinates - device is pending placement on canvas
           pendingPlacement: true
@@ -718,7 +720,7 @@ export const readFileAsText = (file) => {
  * Export all device configs as a ZIP-like bundle (downloads each file)
  * Handles dual-lens cameras by generating separate configs for each FLI stream
  * @param {Array} allDevices - All devices to export
- * @param {Object} options - { garages, projectName } for Configuration.xml
+ * @param {Object} options - { sites, projectName } for Configuration.xml
  */
 export const exportAllConfigs = (allDevices, options = {}) => {
   const cameras = allDevices.filter(d => d.type?.startsWith('cam-'));
@@ -736,8 +738,8 @@ export const exportAllConfigs = (allDevices, options = {}) => {
   downloadFile(devicesConfig, 'DevicesConfig.xml');
 
   // Generate and download Configuration.xml (Epic config)
-  if (options.garages && options.garages.length > 0) {
-    const epicConfig = generateEpicConfiguration(options.garages, {
+  if (options.sites && options.sites.length > 0) {
+    const epicConfig = generateEpicConfiguration(options.sites, {
       projectName: options.projectName
     });
     downloadFile(epicConfig, 'Configuration.xml');
@@ -770,7 +772,7 @@ export const exportAllConfigs = (allDevices, options = {}) => {
   return {
     cameraHubConfig: cameras.length > 0,
     devicesConfig: true,
-    epicConfig: !!(options.garages && options.garages.length > 0),
+    epicConfig: !!(options.sites && options.sites.length > 0),
     fliConfigs: fliConfigCount
   };
 };

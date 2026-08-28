@@ -3,20 +3,8 @@ import { useAppStore } from '../stores/useAppStore';
 import { customerCanSyncToSheet } from '../lib/customerConfigUtils';
 import { Loader2, Cloud, CloudOff, AlertCircle, RefreshCw } from 'lucide-react';
 
-function formatSavedTime(savedAt) {
-  if (!savedAt) return null;
-  try {
-    return new Intl.DateTimeFormat('en-US', {
-      hour: 'numeric', minute: '2-digit', hour12: true,
-    }).format(new Date(savedAt));
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Inline status chip for shared SetupJson layout persistence (map / devices / zones).
- * Distinct from config-tab field sync (Cameras, DisplayControllers, etc.).
+ * Inline status chip for the customer's database persistence (map / devices / zones).
  */
 export default function SetupSyncIndicator() {
   const setupSync = useAppStore((s) => s.setupSync);
@@ -25,21 +13,21 @@ export default function SetupSyncIndicator() {
   const retrySetupSync = useAppStore((s) => s.retrySetupSync);
   const resolveSetupConflictReload = useAppStore((s) => s.resolveSetupConflictReload);
   const resolveSetupConflictOverwrite = useAppStore((s) => s.resolveSetupConflictOverwrite);
-  const loadSetupFromSheet = useAppStore((s) => s.loadSetupFromSheet);
+  const loadCustomerSetup = useAppStore((s) => s.loadCustomerSetup);
 
   const customer = customers.find((c) => c.id === selectedCustomerId) ?? null;
   const canShare = customerCanSyncToSheet(customer);
 
   if (!selectedCustomerId) return null;
 
-  const { status, error, savedAt, customerId } = setupSync;
+  const { status, error, customerId } = setupSync;
   const isForCustomer = customerId === selectedCustomerId;
 
   if (isForCustomer && status === 'loading') {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-        Loading shared layout…
+        Loading layout…
       </span>
     );
   }
@@ -48,7 +36,7 @@ export default function SetupSyncIndicator() {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-        Saving shared layout…
+        Saving layout…
       </span>
     );
   }
@@ -57,7 +45,7 @@ export default function SetupSyncIndicator() {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300" role="alert">
         <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-        <span className="max-w-[220px] truncate" title={error}>{error || 'Shared layout conflict'}</span>
+        <span className="max-w-[220px] truncate" title={error}>{error || 'Save conflict'}</span>
         <button
           type="button"
           onClick={resolveSetupConflictReload}
@@ -96,49 +84,39 @@ export default function SetupSyncIndicator() {
     return (
       <span
         className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
-        title="Needs a Google Sheet — open this site from Drive to create one for shared layout sync."
+        title="Not synced yet — open this site from Drive to bring it into the database."
         role="status"
       >
         <CloudOff className="w-3.5 h-3.5" />
-        Needs a Google Sheet
+        Not synced
       </span>
     );
   }
 
+  // Saved-time display and the Export to Sheets button are switched off for
+  // now — right now the app is purely reading/writing MySQL, so there's
+  // nothing sheet-related worth surfacing in the happy-path state. Loading/
+  // saving/conflict/error feedback above this is untouched since that's not
+  // what was asked to go.
   if (isForCustomer && (status === 'saved' || status === 'loaded')) {
-    const time = formatSavedTime(savedAt);
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400" role="status">
-        <Cloud className="w-3.5 h-3.5" />
-        {time ? `Shared layout ${time}` : 'Shared layout synced'}
-        <button
-          type="button"
-          onClick={() => loadSetupFromSheet(selectedCustomerId)}
-          className="p-0.5 rounded hover:bg-accent cursor-pointer text-muted-foreground hover:text-foreground"
-          title="Refresh shared layout from Google Sheet"
-          aria-label="Refresh shared layout"
-        >
-          <RefreshCw className="w-3 h-3" />
-        </button>
-      </span>
-    );
+    return null;
   }
 
   if (canShare) {
     return (
       <span
         className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
-        title="Map layout, devices, and zones sync to the SetupJson tab on the linked Google Sheet."
+        title="Map layout, devices, and zones are saved to the database."
         role="status"
       >
         <Cloud className="w-3.5 h-3.5" />
-        Shared layout on
+        Synced
         <button
           type="button"
-          onClick={() => loadSetupFromSheet(selectedCustomerId)}
+          onClick={() => loadCustomerSetup(selectedCustomerId)}
           className="p-0.5 rounded hover:bg-accent cursor-pointer"
-          title="Refresh shared layout from Google Sheet"
-          aria-label="Refresh shared layout"
+          title="Refresh layout"
+          aria-label="Refresh layout"
         >
           <RefreshCw className="w-3 h-3" />
         </button>

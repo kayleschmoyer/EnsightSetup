@@ -38,7 +38,7 @@ const customer = (over = {}) => ({
       support24Hour: false,
     },
   },
-  garages: [],
+  sites: [],
   ...over,
 });
 
