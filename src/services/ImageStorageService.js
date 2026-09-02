@@ -107,7 +107,7 @@ export async function deleteSetupAppImage(key) {
  * fails TLS verification in the browser. The presigner signs path-style for the
  * same reason, so both halves of a round-trip agree.
  */
-export function getSetupAppImageUrl(key, { bucket = 'com.ensight-technologies.public', region = 'us-west-1' } = {}) {
+export function getSetupAppImageUrl(key, { bucket = 'com.ensight-technologies.public', region = 'us-east-1' } = {}) {
   assertSetupAppKey(key);
   return `https://s3.${region}.amazonaws.com/${bucket}/${key}`;
 }

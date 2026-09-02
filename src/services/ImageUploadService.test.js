@@ -84,7 +84,7 @@ describe('reads', () => {
   it('resolves an S3 key to the public bucket URL without signing', async () => {
     const url = await getFloorPlanImageUrl(`${FLOOR_PLAN_S3_PREFIX}7/42/lvl-1/bg-1.png`);
     expect(url).toBe(
-      'https://s3.us-west-1.amazonaws.com/com.ensight-technologies.public/setup_app/floor-plans/7/42/lvl-1/bg-1.png',
+      'https://s3.us-east-1.amazonaws.com/com.ensight-technologies.public/setup_app/floor-plans/7/42/lvl-1/bg-1.png',
     );
     expect(supabaseStorageMock.createSignedUrl).not.toHaveBeenCalled();
   });
