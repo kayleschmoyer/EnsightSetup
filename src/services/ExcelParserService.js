@@ -2,10 +2,15 @@
  * ExcelParserService - Parses the Ensight site configuration xlsx workbook
  * and maps it to the GarageLayout app data structure.
  *
- * Expected tabs:
- *   Networking, Garages, GarageLevels, DisplayGroups, DisplayControllers,
+ * Expected tabs (see CONFIG_TAB_HEADERS in src/lib/configSheetSchema.js):
+ *   Customer, Networking, Garages, GarageLevels, DisplayGroups, DisplayControllers,
  *   DisplayLevels, DisplaySchedules, Cameras, FLICameras,
  *   LPRCameras, SensorGroups, Sensors
+ *
+ * Every entity id here is a real uuid — the parsed tree is persisted as-is by
+ * src/lib/importedWorkbookMapping.js / api/_customers-data.js, whose primary
+ * keys are CHAR(36). Cross-references inside the tree (displayGroupId,
+ * configSensorGroupId, displayLevelIds, displaySiteId) use those same ids.
  */
 
 import * as XLSX from 'xlsx';
@@ -24,20 +29,6 @@ const MAX_ROWS_PER_SHEET = 10000;
 const MAX_TOTAL_DEVICES = 50000;
 
 // ========================= HELPERS =========================
-
-/**
- * Sanitize a string to prevent XSS when rendered in the DOM.
- * Escapes HTML special characters.
- */
-function sanitizeForDisplay(value) {
-  if (value == null) return '';
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-}
 
 /**
  * Read a sheet into header row + data rows (preserves exact column order from row 1).
@@ -67,8 +58,12 @@ function sheetToObjects(workbook, sheetName) {
 }
 
 const str = (val) => (val == null ? '' : String(val).trim());
-/** Sanitized string for values that will be displayed in UI */
-const safeStr = (val) => sanitizeForDisplay(str(val));
+/**
+ * Names shown in the UI. Previously HTML-escaped here, which persisted
+ * "&amp;" into the database and back out to the sheet on export — React
+ * escapes text on render, so the raw trimmed value is the correct one to keep.
+ */
+const safeStr = (val) => str(val);
 /**
  * A cell a human formatted in Sheets reads back as display text — "1,000",
  * "$250", "75%". Number() returns NaN for all of those, which silently
@@ -94,9 +89,8 @@ const bool = (val) => {
   return s === 'true' || s === '1' || s === 'yes';
 };
 
-let nextId = 1;
 function genId() {
-  return nextId++;
+  return crypto.randomUUID();
 }
 
 /** True for DisplayLevels.Level values that mean every level (All, All Levels, etc.). */
@@ -153,13 +147,19 @@ export function serversFromNetworkingRows(networkingRows = []) {
     if (!name) return;
     const ip = networkingCell(row, 'IP Address  ', 'IP Address', 'IPAddress');
     const mac = networkingCell(row, 'MAC Address', 'MACAddress');
-    const assignment = networkingCell(row, 'IP Assignment Method').toLowerCase();
+    const ipAssignmentMethod = networkingCell(row, 'IP Assignment Method');
+    const assignment = ipAssignmentMethod.toLowerCase();
     const device = networkingCell(row, 'Device');
     const manufacturer = networkingCell(row, 'Manufacturer');
+    const username = networkingCell(row, 'Username');
+    const password = networkingCell(row, 'Password');
+    const streamAddress = networkingCell(row, 'Stream Address');
     servers.push({
-      id: servers.length + 1,
+      id: genId(),
       name,
       type: mapNetworkingDeviceToServerType(device),
+      // Legacy Networking-tab columns, stored 1:1 on servers.* (see sql/schema.sql).
+      device,
       manufacturer,
       os: 'Windows',
       model: '',
@@ -170,15 +170,19 @@ export function serversFromNetworkingRows(networkingRows = []) {
       }],
       ipAddress: ip,
       macAddress: mac,
+      ipAssignmentMethod,
       status: networkingCell(row, 'Status'),
       location: networkingCell(row, 'Location'),
       mdfIdfLocation: networkingCell(row, 'IDF/MDF Location'),
       subnet: networkingCell(row, 'Subnet'),
       gateway: networkingCell(row, 'Gateway'),
       dns: networkingCell(row, 'DNS'),
-      splashtopUser: networkingCell(row, 'Username') || 'Administrator',
-      splashtopPassword: networkingCell(row, 'Password'),
-      splashtopUrl: networkingCell(row, 'Stream Address'),
+      username,
+      password,
+      streamAddress,
+      splashtopUser: username || 'Administrator',
+      splashtopPassword: password,
+      splashtopUrl: streamAddress,
       notes: networkingCell(row, 'Notes'),
     });
   });
@@ -229,7 +233,7 @@ function buildSignDeviceFromDisplayRow(dl, index, controller, garageId, displayL
     visibleName: str(controller?.VisibleDisplayName || dl.LevelName),
     controllerName: str(controller?.DisplayControllerName || displayName),
     server: str(controller?.Server),
-    hardwareType: str(controller?.InsertHardwareType),
+    hardwareType: str(controller?.HardwareType || controller?.InsertHardwareType),
     keepLevelCountsSeparate: bool(controller?.KeepLevelCountsSeparate),
     positionName: str(dl.PositionName),
     levelDisplayName: str(dl.LevelName),
@@ -368,7 +372,7 @@ function attachDisplaySignsForGarage({
       visibleName: str(controllerMeta.VisibleDisplayName),
       controllerName,
       server: str(controllerMeta.Server),
-      hardwareType: str(controllerMeta.InsertHardwareType),
+      hardwareType: str(controllerMeta.HardwareType || controllerMeta.InsertHardwareType),
       keepLevelCountsSeparate: bool(controllerMeta.KeepLevelCountsSeparate),
       displayLevelAll: false,
       displayLevelIds: [firstPlaceLevel.id],
@@ -407,7 +411,6 @@ export function parseExcelFile(buffer) {
     throw new Error('File is empty.');
   }
 
-  nextId = 1;
   const importStats = { skippedDisplayLevelRows: 0 };
 
   let workbook;
@@ -424,6 +427,7 @@ export function parseExcelFile(buffer) {
   }
 
   // Parse each tab (sheetToObjects enforces row limits)
+  const customerData = sheetToObjects(workbook, 'Customer');
   const networkingData = sheetToObjects(workbook, 'Networking');
   const garagesData = sheetToObjects(workbook, 'Garages');
   const garageLevelsData = sheetToObjects(workbook, 'GarageLevels');
@@ -451,8 +455,8 @@ export function parseExcelFile(buffer) {
   // Security: Track total devices to enforce limits
   let totalDeviceCount = 0;
 
-  const displayGroups = displayGroupsData.map((dg, index) => ({
-    id: index + 1,
+  const displayGroups = displayGroupsData.map((dg) => ({
+    id: genId(),
     name: str(dg.Name),
     sendOnlyOnUpdates: bool(dg.SendOnlyOnUpdates),
     forceSendAfterSeconds: num(dg.ForceSendAfterSeconds, DISPLAY_GROUP_DEFAULT_FORCE_SEND_SECONDS),
@@ -474,7 +478,7 @@ export function parseExcelFile(buffer) {
       .forEach((sg) => {
         const groupKey = str(sg.GroupID);
         if (!groupKey || sensorGroupIdByKey.has(groupKey)) return;
-        const id = sensorGroups.length + 1;
+        const id = genId();
         sensorGroupIdByKey.set(groupKey, id);
         sensorGroups.push({
           id,
@@ -482,6 +486,9 @@ export function parseExcelFile(buffer) {
           controllerAddress: str(sg.ControllerAddress),
           controllerKey: str(sg.ControllerKey),
           sensorProtocol: str(sg.SensorProtocol) || 'NWAVE',
+          // Sheet Garage / Level, mirrored 1:1 into sensor_groups.garage_name/level_name.
+          garage: str(sg.Garage),
+          level: str(sg.Level),
           parentLevel: str(sg.ParentLevel),
         });
       });
@@ -520,18 +527,30 @@ export function parseExcelFile(buffer) {
           str(sourceRow?.BackOfCarIs).toLowerCase()
         );
 
+        const ipAddress = str(cameraRow?.IPAddress);
+        const port = str(cameraRow?.Port);
+        const rtspUrl = str(cameraRow?.RTSPURL);
+        const status = str(cameraRow?.Status);
+        const visibleName = str(cameraRow?.VisibleCameraName);
+
         devices.push({
           id: genId(),
           name: camName,
           type: deviceType,
-          ipAddress: str(cameraRow?.IPAddress),
-          port: str(cameraRow?.Port),
-          rtspUrl: str(cameraRow?.RTSPURL),
-          externalUrl: str(cameraRow?.RTSPURL),
+          // Cameras.VisibleCameraName is the app's friendly name (the export
+          // writes friendlyName back into that column).
+          friendlyName: visibleName,
+          ipAddress,
+          port,
+          rtspUrl,
+          externalUrl: rtspUrl,
           resolution: str(cameraRow?.Resolution),
           server: str(cameraRow?.Server) || server,
-          status: str(cameraRow?.Status),
-          visibleName: str(cameraRow?.VisibleCameraName),
+          status,
+          // Cameras.Status "Disabled" is the only value the export ever writes
+          // for a disabled camera; everything else is active.
+          disabled: status.toLowerCase() === 'disabled',
+          visibleName,
           detectionType: str(cameraRow?.DetectionType),
           backOfCarIs: str(sourceRow?.BackOfCarIs),
           ...(trafficDirection ? { trafficFlow: { direction: trafficDirection } } : {}),
@@ -539,9 +558,12 @@ export function parseExcelFile(buffer) {
           dependentCameraName: str(sourceRow?.DependentCameraName),
           pendingPlacement: true,
           macAddress: '',
-          stream1: str(cameraRow?.RTSPURL),
+          // Structured stream 1 — the persistence split (splitLegacyDevice)
+          // reads ipAddress/port/externalUrl from here; a bare RTSP string
+          // used to drop the IP and port on the floor.
+          stream1: { ipAddress, port, externalUrl: rtspUrl, streamType: deviceType },
           stream2: '',
-          hardwareType: 'Bullet',
+          hardwareType: 'bullet',
           configSheetName: camName,
         });
       };
@@ -600,6 +622,8 @@ export function parseExcelFile(buffer) {
           name: `SensorGroup-${groupId}`,
           type: sensorType,
           sensorProtocol: protocol,
+          // splitLegacyDevice persists `sensorGroup` as sensor_details.sensor_protocol.
+          sensorGroup: protocol || 'NWAVE',
           controllerAddress: str(sg.ControllerAddress),
           controllerKey: str(sg.ControllerKey),
           parentLevel: str(sg.ParentLevel),
@@ -705,6 +729,7 @@ export function parseExcelFile(buffer) {
   }
 
   const rawData = {
+    customer: customerData[0] || null,
     garages: garagesData,
     garageLevels: garageLevelsData,
     displayGroups: displayGroupsData,
