@@ -3,7 +3,7 @@ import { renderLevelToDataURL } from './LevelRenderer';
 import { LOGICAL_W, LOGICAL_H } from '../lib/canvasConstants';
 import { formatTrafficDirectionLabel } from '../lib/trafficFlowUtils';
 import { uniqueSiteDevices } from '../lib/deviceCountUtils';
-import { getDevicePhotoSignedUrl } from './ImageUploadService';
+import { getDevicePhotoImageUrl } from './ImageUploadService';
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────────
 
@@ -785,7 +785,7 @@ async function drawCameraViews(doc, allLevels) {
   // the pixels before laying out the page, so the sync draw loop below never awaits.
   const camerasWithImages = await Promise.all(camerasWithViews.map(async (cam) => {
     try {
-      const url = await getDevicePhotoSignedUrl(cam.viewImage);
+      const url = await getDevicePhotoImageUrl(cam.viewImage);
       const img = url ? await loadImage(url) : null;
       return { ...cam, img };
     } catch {

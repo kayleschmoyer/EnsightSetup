@@ -1,8 +1,9 @@
 /**
  * Compliance gate: live writes to the production database are disabled.
  *
- * Every write entry point in CustomerRepository.js and ImageUploadService.js
- * routes through guardedWrite() instead of calling Supabase directly. While
+ * Every write entry point in CustomerRepository.js, ImageStorageService.js and
+ * ImageUploadService.js routes through guardedWrite() instead of calling the
+ * database or object storage directly. While
  * LIVE_WRITES_ENABLED is false, no insert/update/upsert/delete ever reaches
  * the database — guardedWrite builds a preview of the write (table(s), row(s)
  * by identifier, before -> after), hands it to the registered dialog, and

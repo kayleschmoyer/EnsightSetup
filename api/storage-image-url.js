@@ -15,7 +15,22 @@ import { requireEnsightSession } from './_auth.js';
 import { json, readBody } from './_http.js';
 
 const SIGNED_URL_TTL_SECONDS = 300;
-const ALLOWED_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+// Raster image types only. The bucket is public for reads, so image/svg+xml is
+// deliberately excluded — a hosted SVG is script-capable in the browser.
+// Device photos are normally re-encoded to webp/jpeg/png before upload, but an
+// already-small original is uploaded as-is (see photoPick.prepareDevicePhotoFromFile),
+// which is why the camera-native types are here too.
+const ALLOWED_CONTENT_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'image/bmp',
+  'image/tiff',
+  'image/avif',
+  'image/heic',
+  'image/heif',
+]);
 
 export default async function handler(req, res) {
   if (req.method !== 'POST' && req.method !== 'DELETE') {
@@ -69,7 +84,9 @@ export default async function handler(req, res) {
 
     const contentType = String(body.contentType || '').toLowerCase();
     if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
-      json(res, 400, { error: 'contentType must be image/png, image/jpeg, image/webp, or image/gif.' });
+      json(res, 400, {
+        error: `contentType must be one of: ${[...ALLOWED_CONTENT_TYPES].join(', ')}.`,
+      });
       return;
     }
 

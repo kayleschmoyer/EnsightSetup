@@ -4,7 +4,7 @@ import useImage from 'use-image';
 import { LOGICAL_W, LOGICAL_H, getLogicalCanvasFit } from '../lib/canvasConstants';
 import { coneWedgeRotation, isDualLensCamera } from '../lib/deviceNamingUtils';
 import { signMapLabelLines } from '../lib/signInserts';
-import { getFloorPlanSignedUrl } from '../services/ImageUploadService';
+import { getFloorPlanImageUrl } from '../services/ImageUploadService';
 
 const hexToRgba = (hex, alpha) => {
   const cleaned = (hex || '#3b82f6').replace('#', '');
@@ -260,16 +260,16 @@ const DEVICE_LABELS = {
 };
 
 /**
- * bgImage is a Storage object path, not a renderable src — resolve a
- * short-lived signed URL before loading (see ImageUploadService.getSignedUrl).
+ * bgImage is a stored object key, not a renderable src — resolve it to a URL
+ * before loading (see ImageUploadService.getImageUrl).
  */
-function useFloorPlanSignedUrl(path) {
+function useFloorPlanImageUrl(path) {
   const [url, setUrl] = useState(null);
   useEffect(() => {
     if (!path) { setUrl(null); return undefined; }
     let cancelled = false;
-    getFloorPlanSignedUrl(path).then((signed) => {
-      if (!cancelled) setUrl(signed);
+    getFloorPlanImageUrl(path).then((resolved) => {
+      if (!cancelled) setUrl(resolved);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [path]);
@@ -277,8 +277,8 @@ function useFloorPlanSignedUrl(path) {
 }
 
 function BackgroundImage({ src, width, height }) {
-  const signedUrl = useFloorPlanSignedUrl(src);
-  const [image] = useImage(signedUrl);
+  const imageUrl = useFloorPlanImageUrl(src);
+  const [image] = useImage(imageUrl);
   if (!image) return null;
   // Fit the image inside the logical canvas (letterbox), centered.
   const scale = Math.min(width / image.width, height / image.height);

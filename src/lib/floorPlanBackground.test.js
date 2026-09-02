@@ -51,7 +51,7 @@ describe('floorPlanBackground', () => {
   });
 
   it('targets a ~500KB blob budget now that backgrounds upload to Storage', () => {
-    // Backgrounds are uploaded as Storage blobs (see ImageUploadService.uploadFloorPlanBackground)
+    // Backgrounds are uploaded as blobs to S3 (see ImageUploadService.uploadFloorPlanBackground)
     // instead of embedded as base64 — the tight data-URL/Sheets-cell ceiling no longer applies.
     expect(MAX_FLOOR_PLAN_BYTES).toBe(500_000);
   });

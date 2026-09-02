@@ -5,7 +5,7 @@
 import Konva from 'konva';
 import { LOGICAL_W, LOGICAL_H, getLogicalCanvasFit, getBackgroundFitRect } from '../lib/canvasConstants';
 import { coneWedgeRotation, isDualLensCamera } from '../lib/deviceNamingUtils';
-import { getFloorPlanSignedUrl } from './ImageUploadService';
+import { getFloorPlanImageUrl } from './ImageUploadService';
 
 const DEVICE_SIZE = 10;
 
@@ -374,7 +374,7 @@ export async function renderLevelToDataURL(level, {
 
   // bgImage is a Storage object path — resolve it to a signed URL once and reuse
   // it below, rather than re-signing for the crop-sizing pass and the draw pass.
-  const bgUrl = level.bgImage ? await getFloorPlanSignedUrl(level.bgImage) : null;
+  const bgUrl = level.bgImage ? await getFloorPlanImageUrl(level.bgImage) : null;
 
   if (cropToBackground && bgUrl) {
     const img = await loadImage(bgUrl);

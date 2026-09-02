@@ -56,20 +56,20 @@ import {
   prepareDevicePhotosFromFiles,
 } from '../lib/photoPick';
 import {
-  uploadDevicePhoto, getDevicePhotoSignedUrl, deleteStorageObject, DEVICE_PHOTO_BUCKET,
+  uploadDevicePhoto, getDevicePhotoImageUrl, deleteStorageObject, DEVICE_PHOTO_BUCKET,
 } from '../services/ImageUploadService';
 
 /**
- * Device photos are Storage object paths, not raw src-able data — resolve a
- * short-lived signed URL before rendering (see ImageUploadService.getSignedUrl).
+ * Device photos are stored object keys, not raw src-able data — resolve one to
+ * a URL before rendering (see ImageUploadService.getImageUrl).
  */
 function DevicePhoto({ path, alt, className }) {
   const [url, setUrl] = useState(null);
   useEffect(() => {
     if (!path) return undefined;
     let cancelled = false;
-    getDevicePhotoSignedUrl(path).then((signed) => {
-      if (!cancelled) setUrl(signed);
+    getDevicePhotoImageUrl(path).then((resolved) => {
+      if (!cancelled) setUrl(resolved);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [path]);

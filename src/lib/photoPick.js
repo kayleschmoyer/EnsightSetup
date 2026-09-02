@@ -2,7 +2,7 @@
  * Device photo helpers (sign photos, camera view images).
  *
  * Photos upload as Blobs to the `device-photos` Supabase Storage bucket (see
- * ImageUploadService) — the row only stores the resulting object path, so there's
+ * ImageUploadService) — the row only stores the resulting object key, so there's
  * no more Sheets-cell size ceiling to protect. Still compressed to a byte budget
  * so uploads/renders stay fast on a slow connection.
  */
@@ -113,7 +113,8 @@ async function encodeWithinBudget(source, sourceWidth, sourceHeight) {
 
 /**
  * @deprecated Legacy safety net for data-URL photos carried over by JSON import. New photos
- * are uploaded as Storage blobs (see prepareDevicePhotoFromFile) and never take this path.
+ * are uploaded as blobs to image storage (see prepareDevicePhotoFromFile) and never take
+ * this path.
  * @param {string} dataUrl
  * @returns {Promise<string>}
  */

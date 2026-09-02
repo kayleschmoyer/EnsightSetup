@@ -17,6 +17,12 @@ function extensionForBlob(blob) {
   if (type.includes('webp')) return 'webp';
   if (type.includes('png')) return 'png';
   if (type.includes('jpeg') || type.includes('jpg')) return 'jpg';
+  if (type.includes('avif')) return 'avif';
+  if (type.includes('heic')) return 'heic';
+  if (type.includes('heif')) return 'heif';
+  if (type.includes('tiff')) return 'tiff';
+  if (type.includes('bmp')) return 'bmp';
+  if (type.includes('gif')) return 'gif';
   return 'bin';
 }
 

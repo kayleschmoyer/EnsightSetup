@@ -318,7 +318,7 @@ async function loadImageFloorPlan(file) {
 
 /**
  * Load a floor plan background from PNG/JPEG/WebP or PDF, encoded as a Blob ready
- * for upload to the `floor-plans` Supabase Storage bucket (see ImageUploadService).
+ * for upload to `setup_app/floor-plans/` in S3 (see ImageUploadService).
  * PDFs are rasterized to a canvas first so existing canvas/export paths keep working.
  * Oversized sources are downscaled/recompressed to stay within the ~500KB budget.
  * @param {File} file

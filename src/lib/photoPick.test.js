@@ -70,7 +70,7 @@ describe('readImageFilesAsDataUrls', () => {
 
 describe('MAX_DEVICE_PHOTO_BYTES', () => {
   it('targets a ~500KB blob budget now that photos upload to Storage', () => {
-    // Photos are uploaded as Storage blobs (see ImageUploadService.uploadDevicePhoto)
+    // Photos are uploaded as blobs to S3 (see ImageUploadService.uploadDevicePhoto)
     // instead of embedded as base64 — the tight data-URL/Sheets-cell ceiling no longer applies.
     expect(MAX_DEVICE_PHOTO_BYTES).toBe(500_000);
   });
