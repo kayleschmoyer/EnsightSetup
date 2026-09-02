@@ -100,8 +100,14 @@ export async function deleteSetupAppImage(key) {
 /**
  * The bucket is public for reads — no signing needed, just build the URL.
  * Throws if `key` isn't under setup_app/.
+ *
+ * Path-style (`s3.<region>.amazonaws.com/<bucket>/<key>`), not virtual-hosted
+ * style: this bucket's name contains dots, and AWS's `*.s3.<region>.amazonaws.com`
+ * certificate only covers a single label, so `com.ensight-technologies.public.s3...`
+ * fails TLS verification in the browser. The presigner signs path-style for the
+ * same reason, so both halves of a round-trip agree.
  */
 export function getSetupAppImageUrl(key, { bucket = 'com.ensight-technologies.public', region = 'us-west-1' } = {}) {
   assertSetupAppKey(key);
-  return `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+  return `https://s3.${region}.amazonaws.com/${bucket}/${key}`;
 }

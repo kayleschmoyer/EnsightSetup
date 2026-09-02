@@ -61,9 +61,15 @@ export function assertSetupAppKey(key) {
   return value;
 }
 
+/**
+ * Path-style, not virtual-hosted style — the bucket name contains dots, which
+ * AWS's `*.s3.<region>.amazonaws.com` wildcard certificate does not cover, so
+ * the virtual-hosted host fails TLS verification. Matches the presigned URLs
+ * the SDK produces for this bucket, and ImageStorageService.getSetupAppImageUrl.
+ */
 export function publicObjectUrl(key) {
   assertSetupAppKey(key);
   const bucket = getS3Bucket();
   const region = process.env.AWS_REGION;
-  return `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+  return `https://s3.${region}.amazonaws.com/${bucket}/${key}`;
 }

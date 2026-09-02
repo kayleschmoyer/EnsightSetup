@@ -8,7 +8,7 @@ import {
 describe('ImageStorageService setup_app/ key guard', () => {
   it('builds a public object URL for a setup_app/ key', () => {
     expect(getSetupAppImageUrl(`${SETUP_APP_PREFIX}customer1/site1/level1/bg-1.png`)).toBe(
-      'https://com.ensight-technologies.public.s3.us-west-1.amazonaws.com/setup_app/customer1/site1/level1/bg-1.png',
+      'https://s3.us-west-1.amazonaws.com/com.ensight-technologies.public/setup_app/customer1/site1/level1/bg-1.png',
     );
   });
 
