@@ -192,7 +192,10 @@ export function buildCustomerListRows(customers = [], catalogRows = []) {
   const rows = catalogRows.map((catalogRow) => {
     const customer = findLocalCustomerForCatalogRow(customers, catalogRow);
     return {
-      id: `drive:${catalogRow.file.id}`,
+      // Keyed by the customer once one exists, so a card does not remount
+      // (and lose an in-flight click / expanded state) when the Drive catalog
+      // arrives and the local-only row becomes a linked row.
+      id: customer ? `local:${customer.id}` : `drive:${catalogRow.file.id}`,
       key: catalogRow.key,
       displayName: customer?.friendlyName || catalogRow.displayName,
       isNativeSheet: Boolean(catalogRow.isNativeSheet || customer?.spreadsheetId),

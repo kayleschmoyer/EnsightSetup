@@ -10,9 +10,8 @@ import { Card, CardContent } from './ui/card';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from './ui/dialog';
-import {
-  signInWithGoogle, signOut, isSignedIn, verifySharedFolderAccess, listAllConfigFilesInFolder,
-} from '../services/GoogleDriveService';
+import { listDriveConfigFiles } from '../services/DriveConfigService';
+import { importCustomerFromDrive } from '../services/ImportCustomerFromDriveService';
 import {
   renderSignInButton,
   onSignInError,
@@ -23,8 +22,6 @@ import {
   updateCustomerInfo,
   deleteCustomer as deleteSupabaseCustomer,
 } from '../services/CustomerRepository';
-import { sheetHasConfigData } from '../services/ConfigSheetSyncService';
-import { openConfigFromDriveFile } from '../services/OpenConfigFromDriveService';
 import {
   mergeConfigFilesIntoCatalog,
   buildCustomerListRows,
@@ -152,19 +149,16 @@ export default function CustomerSelector() {
   } = useAppStore();
   const session = useAppStore((s) => s.session);
 
-  // Signed in now means "has a Supabase session" — that's what RLS gates and
-  // what lets Add Customer create a real row. The Drive-specific sign-in below
-  // (isSignedIn/subscribeGoogleAuth) is kept only for the optional/deferred
-  // "import from an old Drive-linked spreadsheet" admin flow further down this
-  // file; it no longer drives the primary `authenticated` flag.
+  // Signed in means "has an app session" (the Google sign-in button below →
+  // api/auth-google → session cookie). That same session is all the Drive
+  // catalog needs: the server lists and downloads the shared Site-configs
+  // folder with its service account (api/drive-configs/*), so there is no
+  // separate Drive consent in the browser any more.
   const [authenticated, setAuthenticated] = useState(Boolean(session));
   useEffect(() => {
     setAuthenticated(Boolean(session));
   }, [session]);
-  const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
-  const [driveAccessDenied, setDriveAccessDenied] = useState(false);
-  const [, setSessionExpired] = useState(false);
 
   const [catalogRows, setCatalogRows] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -187,6 +181,8 @@ export default function CustomerSelector() {
   const [confirmOpenMode, setConfirmOpenMode] = useState('open');
   const [openingConfig, setOpeningConfig] = useState(false);
   const [openConfigError, setOpenConfigError] = useState('');
+  /** Result of the last successful import, shown in the dialog until the user opens the customer. */
+  const [importOutcome, setImportOutcome] = useState(null);
   const openConfigGenerationRef = useRef(0);
   const openAbortRef = useRef(null);
   const catalogFetchGenRef = useRef(0);
@@ -208,24 +204,17 @@ export default function CustomerSelector() {
   }, []);
 
   const fetchCatalog = useCallback(async () => {
-    if (!isSignedIn()) {
-      setCatalogError('Sign in with Google to load site configs from Drive.');
-      return;
-    }
     const generation = ++catalogFetchGenRef.current;
     setCatalogLoading(true);
     setCatalogError('');
     try {
-      const { files } = await listAllConfigFilesInFolder();
+      const files = await listDriveConfigFiles();
       if (generation !== catalogFetchGenRef.current) return;
       setCatalogRows(mergeConfigFilesIntoCatalog(files));
       setCatalogFetched(true);
     } catch (err) {
       if (generation !== catalogFetchGenRef.current) return;
       setCatalogError(err.message || 'Failed to load site configs from Drive.');
-      if (err.code === 'DRIVE_FORBIDDEN') {
-        setDriveAccessDenied(true);
-      }
     } finally {
       if (generation === catalogFetchGenRef.current) {
         setCatalogLoading(false);
@@ -233,10 +222,12 @@ export default function CustomerSelector() {
     }
   }, []);
 
-  // Drive catalog sync (the optional/deferred import flow) stays opt-in only —
-  // triggered by the "Sync" button (fetchCatalog), never auto-run — since it
-  // has its own separate Drive sign-in requirement that's no longer part of
-  // the primary sign-in flow above.
+  // The Drive folder is the source of new customers, so its catalog loads as
+  // soon as the app session exists; "Sync" re-fetches it on demand.
+  useEffect(() => {
+    if (!authenticated || catalogFetched) return;
+    fetchCatalog();
+  }, [authenticated, catalogFetched, fetchCatalog]);
 
   /**
    * Primary sign-in: Google's own rendered button, restricted server-side to
@@ -255,43 +246,9 @@ export default function CustomerSelector() {
   }, [authenticated]);
   useEffect(() => onSignInError((err) => setAuthError(err.message || 'Sign-in failed')), []);
 
-  /**
-   * Deferred/optional: sign into Google Drive separately to use the "import a
-   * customer from an old Drive-linked spreadsheet" admin flow further down
-   * this file. Independent of the primary Supabase sign-in above.
-   */
-  const handleGrantDriveAccess = useCallback(async () => {
-    setAuthError('');
-    setDriveAccessDenied(false);
-    setAuthLoading(true);
-    try {
-      await signInWithGoogle({ prompt: 'consent' });
-      const hasDriveAccess = await verifySharedFolderAccess();
-      if (!hasDriveAccess) {
-        const message =
-          'Signed in, but Google Drive access to the configuration folder was denied. ' +
-          'Click "Grant Drive Access" below to approve Drive permissions, or ask an administrator ' +
-          'to share the folder with your account.';
-        setDriveAccessDenied(true);
-        setAuthError(message);
-        return;
-      }
-      setDriveAccessDenied(false);
-      setSessionExpired(false);
-      setAuthError('');
-    } catch (err) {
-      setAuthError(err.message || 'Sign-in failed');
-    } finally {
-      setAuthLoading(false);
-    }
-  }, []);
-
   const handleSignOut = useCallback(() => {
-    signOut();
     signOutEnsight().catch(() => {});
     setAuthenticated(false);
-    setDriveAccessDenied(false);
-    setSessionExpired(false);
     setAuthError('');
     setCatalogRows([]);
     setCatalogFetched(false);
@@ -334,10 +291,15 @@ export default function CustomerSelector() {
     setConfirmOpenRow(null);
     setConfirmOpenMode('open');
     setOpenConfigError('');
+    setImportOutcome(null);
   }, []);
 
-  /** Open / reload a Drive catalog row. Pass `row` to start immediately (no confirm click). */
-  const openFromDrive = useCallback(async (row) => {
+  /**
+   * Import (or re-import) a Drive catalog row into the shared database. The
+   * catalog already prefers the native Google Sheet over a companion .xlsx
+   * (mergeConfigFilesIntoCatalog), so the row's file is the one to read.
+   */
+  const importFromDrive = useCallback(async (row) => {
     if (!row?.catalogRow?.file || openingConfig) return;
     const generation = ++openConfigGenerationRef.current;
     try {
@@ -350,24 +312,10 @@ export default function CustomerSelector() {
     setConfirmOpenRow(row);
     setOpeningConfig(true);
     setOpenConfigError('');
+    setImportOutcome(null);
     try {
-      const catalogRow = row.catalogRow;
-      // Default: open from the catalog file (native Sheet or lone xlsx).
-      let sourceFile = catalogRow.file;
-      let existingSpreadsheetId = row.customer?.spreadsheetId ?? null;
-      if (catalogRow.isNativeSheet && catalogRow.sourceXlsxFile) {
-        // A hung Excel open can leave an empty Sheet that the catalog prefers.
-        // Re-seed from the companion .xlsx only when the Sheet has no config
-        // data yet — a healthy Sheet (with newer team edits) is never overwritten.
-        const seeded = await sheetHasConfigData(catalogRow.file.id);
-        if (generation !== openConfigGenerationRef.current) return;
-        if (!seeded) {
-          sourceFile = catalogRow.sourceXlsxFile;
-          existingSpreadsheetId = catalogRow.file.id;
-        }
-      }
-      await openConfigFromDriveFile({
-        sourceFile,
+      const result = await importCustomerFromDrive({
+        file: row.catalogRow.file,
         customers: useAppStore.getState().customers,
         store: {
           addCustomer: useAppStore.getState().addCustomer,
@@ -375,53 +323,45 @@ export default function CustomerSelector() {
           selectCustomer: useAppStore.getState().selectCustomer,
           setHydration: useAppStore.getState().setHydration,
         },
-        friendlyName: row.displayName,
-        mode: row.customer ? 'replace' : 'new',
-        existingSpreadsheetId,
-        existingCustomerId: row.customer?.id ?? null,
+        existingCustomer: row.customer ?? null,
+        select: false,
         signal: controller.signal,
       });
       if (generation !== openConfigGenerationRef.current) return;
-      setConfirmOpenRow(null);
-      setConfirmOpenMode('open');
-      await fetchCatalog();
+      setImportOutcome(result);
+      setConfirmOpenMode('done');
     } catch (err) {
-      // Cancel bumps the generation, so aborted opens never reach here.
+      // Cancel bumps the generation, so aborted imports never reach here.
       if (generation !== openConfigGenerationRef.current) return;
-      setOpenConfigError(err.message || 'Failed to open configuration.');
+      setOpenConfigError(err.message || 'Failed to import configuration.');
     } finally {
       if (generation === openConfigGenerationRef.current) {
         setOpeningConfig(false);
         openAbortRef.current = null;
       }
     }
-  }, [openingConfig, fetchCatalog]);
+  }, [openingConfig]);
 
   const handleRowActivate = useCallback((row) => {
-    // Already opened locally — go straight in (SetupJson hydrate runs in selectCustomer).
+    // Already in the database — go straight in (loadCustomerSetup runs in selectCustomer).
     if (row.customer) {
       selectCustomer(row.customer.id);
       return;
     }
     if (!row.catalogRow?.file) return;
-    if (!isSignedIn()) {
-      setSessionExpired(true);
-      setAuthError('Sign in with Google to open customers from Drive.');
+    if (!authenticated) {
+      setAuthError('Sign in to import customers from Drive.');
       return;
     }
-    // Existing Drive site: open immediately — no "Open shared config?" confirm.
+    // Not imported yet: read the sheet and create the customer right away.
     setConfirmOpenMode('open');
-    void openFromDrive(row);
-  }, [selectCustomer, openFromDrive]);
+    void importFromDrive(row);
+  }, [selectCustomer, importFromDrive, authenticated]);
 
   const handleAskReloadFromDrive = useCallback((row) => {
     if (!row?.catalogRow?.file || !row.customer) return;
-    if (!isSignedIn()) {
-      setSessionExpired(true);
-      setAuthError('Sign in with Google to reload from Drive.');
-      return;
-    }
     setOpenConfigError('');
+    setImportOutcome(null);
     setConfirmOpenMode('reload');
     setConfirmOpenRow(row);
   }, []);
@@ -435,8 +375,14 @@ export default function CustomerSelector() {
 
   const handleConfirmReloadFromDrive = useCallback(() => {
     if (!confirmOpenRow) return;
-    void openFromDrive(confirmOpenRow);
-  }, [confirmOpenRow, openFromDrive]);
+    void importFromDrive(confirmOpenRow);
+  }, [confirmOpenRow, importFromDrive]);
+
+  const handleOpenImported = useCallback(() => {
+    const customerId = importOutcome?.customerId;
+    handleCancelOpenConfig();
+    if (customerId) selectCustomer(customerId);
+  }, [importOutcome, handleCancelOpenConfig, selectCustomer]);
 
   const handleAddCustomer = useCallback(async () => {
     const name = form.friendlyName.trim();
@@ -648,7 +594,7 @@ export default function CustomerSelector() {
               </div>
               {!customer && (
                 <p className="mt-0.5 truncate text-[10px] text-[#6c757d]">
-                  {row.isNativeSheet ? 'Google Sheet · not opened yet' : 'Excel · opens as Google Sheet'}
+                  {row.isNativeSheet ? 'Google Sheet · not imported yet' : 'Excel · not imported yet'}
                   {row.catalogRow?.duplicateFiles?.length
                     ? ` · ${row.catalogRow.duplicateFiles.length} duplicate name${row.catalogRow.duplicateFiles.length === 1 ? '' : 's'} in Drive`
                     : ''}
@@ -769,10 +715,10 @@ export default function CustomerSelector() {
             variant="outline"
             size="sm"
             onClick={fetchCatalog}
-            disabled={!authenticated || catalogLoading || driveAccessDenied}
+            disabled={!authenticated || catalogLoading}
             className="h-7 border-[#495057] bg-transparent px-3 text-[11px] text-white hover:bg-[#282e35]"
             title={authenticated
-              ? 'Refresh list from Drive (does not open or convert files)'
+              ? 'Refresh the list of site-config files in the shared Drive folder'
               : 'Sign in to sync from Drive'}
             aria-label="Sync customer list from Google Drive"
           >
@@ -804,11 +750,11 @@ export default function CustomerSelector() {
       <ReportIssueDialog open={showReportIssue} onOpenChange={setShowReportIssue} />
 
       <div className="flex-1 overflow-y-auto px-7 py-6">
-        {catalogError && authenticated && !driveAccessDenied && (
-          <div className="mb-4 max-w-4xl mx-auto flex items-start gap-3 p-4 rounded-xl border border-destructive/30 bg-destructive/5">
+        {catalogError && authenticated && (
+          <div className="mb-4 max-w-4xl mx-auto flex items-start gap-3 p-4 rounded-xl border border-destructive/30 bg-destructive/5" role="alert">
             <AlertCircle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
             <div className="flex-1 text-sm">
-              <p className="font-medium text-destructive">Could not sync Drive catalog</p>
+              <p className="font-medium text-destructive">Could not load site configs from Drive</p>
               <p className="text-muted-foreground mt-1 text-xs">{catalogError}</p>
             </div>
             <Button variant="outline" size="sm" onClick={fetchCatalog} disabled={catalogLoading}>
@@ -817,17 +763,8 @@ export default function CustomerSelector() {
           </div>
         )}
 
-        {driveAccessDenied && (
-          <div className="mb-4 max-w-4xl mx-auto flex items-start gap-3 p-4 rounded-xl border border-warning/30 bg-warning/10">
-            <AlertCircle className="w-5 h-5 text-warning shrink-0 mt-0.5" />
-            <div className="flex-1 text-sm">
-              <p className="font-medium text-warning">Google Drive access required</p>
-              <p className="text-muted-foreground mt-1 text-xs">{authError}</p>
-            </div>
-            <Button variant="outline" size="sm" onClick={() => handleGrantDriveAccess()} disabled={authLoading}>
-              Grant Drive Access
-            </Button>
-          </div>
+        {authError && !authenticated && (
+          <p className="mb-4 max-w-4xl mx-auto text-sm text-destructive" role="alert">{authError}</p>
         )}
 
         <section className="mb-6 flex flex-wrap items-center gap-3 rounded-[5px] border border-[#3a424b] bg-[#20272f] px-4 py-2.5" aria-label="Search and filter customers">
@@ -846,7 +783,7 @@ export default function CustomerSelector() {
               { key: 'all', label: 'All', count: listRows.length, color: '#adb5bd', description: 'Show every listed customer' },
               { key: 'opened', label: 'Customers', count: customers.length, color: '#00acac', description: 'Customers in the shared database' },
               { key: 'sheets', label: 'Google Sheet', count: customerSummary.sheets, color: '#49b6d6', description: 'Drive files that have not been imported into the database yet' },
-              { key: 'excel', label: 'Excel — not converted', count: customerSummary.excel, color: '#f59c1a', description: 'Excel files waiting to be imported' },
+              { key: 'excel', label: 'Excel', count: customerSummary.excel, color: '#f59c1a', description: 'Excel files waiting to be imported' },
             ].map(({ key, label, count, color, description }) => {
               const active = statusFilter === key;
               return (
@@ -1040,7 +977,7 @@ export default function CustomerSelector() {
         onOpenChange={(open) => { if (!open) setSupportDialogCustomer(null); }}
       />
 
-      {/* Drive open progress / reload confirmation */}
+      {/* Drive import progress / reload confirmation / result */}
       <Dialog
         open={!!confirmOpenRow}
         onOpenChange={(open) => {
@@ -1050,56 +987,81 @@ export default function CustomerSelector() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {confirmOpenMode === 'reload'
-                ? 'Reload from Drive?'
-                : (openingConfig ? 'Opening…' : 'Could not open')}
+              {confirmOpenMode === 'reload' && !openingConfig && !openConfigError && 'Reload from Drive?'}
+              {confirmOpenMode === 'done' && (importOutcome?.mode === 'replaced' ? 'Reloaded from Drive' : 'Imported from Drive')}
+              {confirmOpenMode !== 'done' && (openingConfig
+                ? 'Importing…'
+                : (openConfigError ? 'Could not import' : (confirmOpenMode === 'reload' ? '' : 'Import')))}
             </DialogTitle>
             <DialogDescription className="space-y-2">
               <span className="block">
                 <span className="font-medium text-foreground">{confirmOpenRow?.displayName}</span>
               </span>
-              {confirmOpenMode === 'reload' ? (
+              {confirmOpenMode === 'reload' && !openingConfig && !openConfigError && (
                 <span className="block text-muted-foreground">
-                  Open your current local copy, or reload from Drive (uses SetupJson when present;
-                  otherwise sheet tabs). Reload replaces local layout data for this customer.
+                  Replaces this customer&apos;s sites, levels and devices in the shared database with
+                  what the sheet says now. Device placements, floor plans and photos that are not
+                  on the sheet are lost.
                 </span>
-              ) : (
+              )}
+              {openingConfig && (
                 <span className="block text-muted-foreground">
-                  {openingConfig
-                    ? (confirmOpenRow?.isNativeSheet && !confirmOpenRow?.catalogRow?.sourceXlsxFile
-                      ? 'Loading shared config…'
-                      : 'Writing Google Sheet tabs from Excel… this can take a minute for larger files.')
-                    : 'Something went wrong. Retry or cancel.'}
+                  Reading the sheet tabs and saving to the shared database…
+                </span>
+              )}
+              {!openingConfig && openConfigError && (
+                <span className="block text-muted-foreground">Nothing was saved. Retry or cancel.</span>
+              )}
+              {confirmOpenMode === 'done' && importOutcome && (
+                <span className="block text-muted-foreground">
+                  {importOutcome.summary.sites} sites · {importOutcome.summary.levels} levels
+                  {importOutcome.summary.zones ? ` · ${importOutcome.summary.zones} zones` : ''}
+                  {' '}· {importOutcome.summary.devices} devices · {importOutcome.summary.servers} servers
                 </span>
               )}
             </DialogDescription>
           </DialogHeader>
-          {openingConfig && (!confirmOpenRow?.isNativeSheet || confirmOpenRow?.catalogRow?.sourceXlsxFile) && (
+          {openingConfig && (
             <p className="text-sm text-muted-foreground flex items-center gap-2">
               <Loader2 className="w-4 h-4 animate-spin shrink-0" />
               You can Cancel if this stalls.
             </p>
           )}
           {openConfigError && (
-            <p className="text-sm text-destructive">{openConfigError}</p>
+            <p className="text-sm text-destructive" role="alert">{openConfigError}</p>
+          )}
+          {confirmOpenMode === 'done' && importOutcome?.warnings?.length > 0 && (
+            <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-xs" role="status">
+              <p className="font-medium text-warning mb-1">
+                {importOutcome.warnings.length} note{importOutcome.warnings.length === 1 ? '' : 's'} from the sheet
+              </p>
+              <ul className="list-disc pl-4 space-y-0.5 text-muted-foreground max-h-40 overflow-y-auto">
+                {importOutcome.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </div>
           )}
           <DialogFooter className="gap-2 sm:gap-0 flex-col sm:flex-row">
             <Button
               variant="outline"
               onClick={handleCancelOpenConfig}
             >
-              Cancel
+              {confirmOpenMode === 'done' ? 'Close' : 'Cancel'}
             </Button>
-            {confirmOpenMode === 'reload' && (
+            {confirmOpenMode === 'reload' && !openConfigError && (
               <Button variant="outline" onClick={handleConfirmOpenOnly} disabled={openingConfig}>
-                Open local
+                Open without reloading
               </Button>
             )}
-            {(confirmOpenMode === 'reload' || openConfigError) && (
+            {(confirmOpenMode === 'reload' || openConfigError) && confirmOpenMode !== 'done' && (
               <Button onClick={handleConfirmReloadFromDrive} disabled={openingConfig}>
                 {openingConfig ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                {confirmOpenMode === 'reload' ? 'Reload from Drive' : 'Retry'}
+                {openConfigError ? 'Retry' : 'Reload from Drive'}
               </Button>
+            )}
+            {confirmOpenMode === 'done' && (
+              <Button onClick={handleOpenImported}>Open →</Button>
             )}
           </DialogFooter>
         </DialogContent>
