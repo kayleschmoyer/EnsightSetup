@@ -155,7 +155,14 @@ function sensorFieldsFromRow(row) {
     ...(details.api_key ? { apiKey: details.api_key } : {}),
     ...(details.sensor_id ? { sensorId: details.sensor_id } : {}),
     ...(units.length ? {
-      sensors: units.map((u) => ({ sensorName: u.sensor_name || '', sensorId: u.sensor_id || '' })),
+      sensors: units.map((u) => ({
+        sensorName: u.sensor_name || '',
+        sensorId: u.sensor_id || '',
+        // Sensors tab ParkingType / TempParkingTimeInMinutes — kept per unit so
+        // the export (buildSensorSheetRow) writes them back unchanged.
+        ...(u.parking_type ? { parkingType: u.parking_type } : {}),
+        ...(u.temp_parking_time_minutes != null ? { tempParkingTimeInMinutes: u.temp_parking_time_minutes } : {}),
+      })),
     } : {}),
   };
 }
@@ -370,6 +377,10 @@ export function splitLegacyDevice(device, levelId, zoneIdSet) {
         position: idx,
         sensor_name: s.sensorName ?? s.name ?? null,
         sensor_id: s.sensorId ?? null,
+        parking_type: s.parkingType || null,
+        temp_parking_time_minutes: (s.tempParkingTimeInMinutes === '' || s.tempParkingTimeInMinutes == null)
+          ? null
+          : Number(s.tempParkingTimeInMinutes),
       }));
     }
   }
@@ -481,6 +492,8 @@ export function dbSiteToLegacy(row) {
     id: row.id,
     name: row.name,
     internalName: row.internal_name ?? row.name,
+    // Garages.Stage on the config sheet (buildGarageSheetRow reads site.stage).
+    stage: row.stage ?? '',
     address: row.address ?? '',
     city: row.city ?? '',
     state: row.state ?? '',
@@ -549,10 +562,15 @@ export function dbCustomerToLegacy(row) {
     code: row.code,
     friendlyName: row.friendly_name,
     configSheetName: row.config_sheet_name,
+    // Drive file the customer was imported from (see ImportCustomerFromDriveService.js);
+    // driveConfigCatalog.findLocalCustomerForCatalogRow matches on spreadsheetId.
+    spreadsheetId: row.spreadsheet_id ?? null,
+    spreadsheetUrl: row.spreadsheet_url ?? null,
     config: dbCustomerConfigToLegacy(row),
     sites: (row.sites || []).map(dbSiteToLegacy),
     displaySchedules: (row.display_schedules || []).map((s) => ({
       id: s.id,
+      DisplayName: s.display_name ?? '',
       StartTime: s.start_time,
       EndTime: s.end_time,
       Day: s.day,

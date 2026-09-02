@@ -108,7 +108,7 @@ async function replaceChildRowsForParents(pool, table, parentColumn, parentIds, 
 // ---------------------------------------------------------------------------
 // Column lists — mirror sql/schema.sql exactly.
 // ---------------------------------------------------------------------------
-const SITE_COLUMNS = ['id', 'customer_id', 'name', 'internal_name', 'address', 'city', 'state', 'zip', 'maps_url', 'image_path', 'quick_links', 'contacts'];
+const SITE_COLUMNS = ['id', 'customer_id', 'name', 'internal_name', 'stage', 'address', 'city', 'state', 'zip', 'maps_url', 'image_path', 'quick_links', 'contacts'];
 const SERVER_COLUMNS = ['id', 'site_id', 'manufacturer', 'device_type', 'name', 'status', 'location', 'mdf_idf_location', 'ip', 'mac', 'ip_assignment_method', 'subnet', 'gateway', 'dns', 'username', 'password', 'notes', 'stream_address', 'type', 'os', 'model', 'port_count', 'port1_mac', 'port1_ip', 'port1_dhcp', 'port2_mac', 'port2_ip', 'port2_dhcp', 'port3_mac', 'port3_ip', 'port3_dhcp', 'port4_mac', 'port4_ip', 'port4_dhcp', 'splashtop_user', 'splashtop_password', 'splashtop_url'];
 const DISPLAY_GROUP_COLUMNS = ['id', 'site_id', 'name', 'send_only_on_updates', 'force_send_after_seconds'];
 const SENSOR_GROUP_COLUMNS = ['id', 'site_id', 'group_id', 'controller_address', 'controller_key', 'sensor_protocol', 'garage_name', 'level_name', 'parent_level'];
@@ -124,9 +124,9 @@ const SIGN_DISPLAY_LEVEL_COLUMNS = ['id', 'device_id', 'level_id', 'zone_id'];
 const SIGN_INSERT_COLUMNS = ['id', 'device_id', 'position', 'display_name', 'serial_address', 'has_ethernet', 'display_level_all'];
 const SIGN_INSERT_LEVEL_COLUMNS = ['id', 'insert_id', 'level_id', 'zone_id'];
 const SENSOR_DETAILS_COLUMNS = ['device_id', 'sensor_protocol', 'config_sensor_group_id', 'sensor_count', 'api_key', 'sensor_id'];
-const SENSOR_UNIT_COLUMNS = ['id', 'device_id', 'position', 'sensor_name', 'sensor_id'];
+const SENSOR_UNIT_COLUMNS = ['id', 'device_id', 'position', 'sensor_name', 'sensor_id', 'parking_type', 'temp_parking_time_minutes'];
 const DEVICE_PHOTO_COLUMNS = ['id', 'device_id', 'position', 'storage_path'];
-const DISPLAY_SCHEDULE_COLUMNS = ['id', 'customer_id', 'start_time', 'end_time', 'day', 'count_position', 'file_path', 'garage1', 'level1', 'garage2', 'level2'];
+const DISPLAY_SCHEDULE_COLUMNS = ['id', 'customer_id', 'display_name', 'start_time', 'end_time', 'day', 'count_position', 'file_path', 'garage1', 'level1', 'garage2', 'level2'];
 
 // ---------------------------------------------------------------------------
 // Reads
@@ -374,6 +374,7 @@ function saveMdfIdfLocations(pool, siteId, locations) {
 
 function saveDisplaySchedules(pool, customerId, schedules) {
   return replaceChildRows(pool, 'display_schedules', 'customer_id', customerId, schedules, DISPLAY_SCHEDULE_COLUMNS, (s) => ({
+    display_name: s.DisplayName || null,
     start_time: s.StartTime || null,
     end_time: s.EndTime || null,
     day: s.Day || null,
@@ -484,6 +485,7 @@ async function saveSites(pool, customerId, sites) {
       customer_id: customerId,
       name: site.name || '',
       internal_name: site.internalName || site.name || '',
+      stage: site.stage || null,
       address: site.address || '',
       city: site.city || '',
       state: site.state || '',
@@ -506,20 +508,24 @@ async function saveSites(pool, customerId, sites) {
 }
 
 export async function createCustomer({
-  customerId, code, friendlyName, config = {}, sites = [],
+  customerId, code, friendlyName, config = {}, sites = [], displaySchedules = [],
+  spreadsheetId = null, spreadsheetUrl = null,
 }) {
   assertWritesEnabled();
   const pool = getPool();
   const id = randomUUID();
+  // spreadsheet_id/url: the Drive file a customer was imported from (see
+  // src/services/ImportCustomerFromDriveService.js) — null for hand-created customers.
   await pool.query(
-    'INSERT INTO customers (id, customer_id, code, friendly_name, config_sheet_name) VALUES (?, ?, ?, ?, ?)',
-    [id, customerId, code, friendlyName, configSheetTitle(friendlyName)],
+    'INSERT INTO customers (id, customer_id, code, friendly_name, config_sheet_name, spreadsheet_id, spreadsheet_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [id, customerId, code, friendlyName, configSheetTitle(friendlyName), spreadsheetId || null, spreadsheetUrl || null],
   );
   await Promise.all([
     saveCustomerAddress(pool, id, config),
     saveCustomerSupport(pool, id, config.support || {}),
   ]);
   if (sites.length) await saveSites(pool, id, sites);
+  if (displaySchedules.length) await saveDisplaySchedules(pool, id, displaySchedules);
   return loadCustomerFull(id);
 }
 
@@ -566,7 +572,16 @@ export async function saveCustomerFull(id, customer, expectedUpdatedAt) {
       await conn.rollback();
       guardResult = { status: 'conflict', remoteUpdatedAt: currentUpdatedAt };
     } else {
-      await conn.query('UPDATE customers SET code = ?, friendly_name = ? WHERE id = ?', [customer.code || '', customer.friendlyName || '', id]);
+      // spreadsheet_id/url are only rewritten when the caller sends them (a
+      // Drive import); a normal editor save leaves the existing link alone.
+      if (customer.spreadsheetId !== undefined) {
+        await conn.query(
+          'UPDATE customers SET code = ?, friendly_name = ?, spreadsheet_id = ?, spreadsheet_url = ? WHERE id = ?',
+          [customer.code || '', customer.friendlyName || '', customer.spreadsheetId || null, customer.spreadsheetUrl || null, id],
+        );
+      } else {
+        await conn.query('UPDATE customers SET code = ?, friendly_name = ? WHERE id = ?', [customer.code || '', customer.friendlyName || '', id]);
+      }
       await conn.commit();
     }
   } finally {

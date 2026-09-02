@@ -81,11 +81,14 @@ export async function loadCustomerFull(customerRowId) {
 
 /**
  * Create a new customer row (and its initial site/level tree, if provided).
- * @param {{ customerId: string, code: string, friendlyName: string, config?: object, sites?: object[] }} customer
+ * @param {{ customerId: string, code: string, friendlyName: string, config?: object, sites?: object[],
+ *   displaySchedules?: object[], spreadsheetId?: string|null, spreadsheetUrl?: string|null }} customer
+ *   spreadsheetId/Url link the row to the Drive file it was imported from (ImportCustomerFromDriveService).
  * @returns {Promise<{ customer: object, updatedAt: string }>}
  */
 export async function createCustomer({
-  customerId, code, friendlyName, config = {}, sites = [],
+  customerId, code, friendlyName, config = {}, sites = [], displaySchedules = [],
+  spreadsheetId = null, spreadsheetUrl = null,
 }) {
   return guardedWrite(
     () => ({
@@ -108,7 +111,7 @@ export async function createCustomer({
       ],
     }),
     async () => apiSend('POST', '/api/customers', {
-      customerId, code, friendlyName, config, sites,
+      customerId, code, friendlyName, config, sites, displaySchedules, spreadsheetId, spreadsheetUrl,
     }),
   );
 }

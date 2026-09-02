@@ -88,6 +88,8 @@ CREATE TABLE customer_support (
 CREATE TABLE display_schedules (
   id              CHAR(36) NOT NULL DEFAULT (UUID()) PRIMARY KEY,
   customer_id     CHAR(36) NOT NULL,
+  -- DisplaySchedules.DisplayName on the config sheet.
+  display_name    VARCHAR(255) NULL,
   start_time      VARCHAR(255) NULL,
   end_time        VARCHAR(255) NULL,
   day             VARCHAR(255) NULL,
@@ -110,6 +112,8 @@ CREATE TABLE sites (
   customer_id    CHAR(36) NOT NULL,
   name           VARCHAR(255) NOT NULL,
   internal_name  VARCHAR(255) NULL,
+  -- Garages.Stage on the config sheet (see sql/migrations/2026-09-02_drive_import_columns.sql).
+  stage          VARCHAR(255) NULL,
   address        VARCHAR(255) NULL,
   city           VARCHAR(255) NULL,
   state          VARCHAR(255) NULL,
@@ -452,6 +456,9 @@ CREATE TABLE sensor_units (
   position     INT NOT NULL DEFAULT 0,
   sensor_name  VARCHAR(255) NULL,
   sensor_id    VARCHAR(255) NULL,
+  -- Sensors.ParkingType / TempParkingTimeInMinutes on the config sheet.
+  parking_type VARCHAR(255) NULL,
+  temp_parking_time_minutes INT NULL,
   CONSTRAINT fk_sensor_units_device FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE,
   INDEX idx_sensor_units_device (device_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
