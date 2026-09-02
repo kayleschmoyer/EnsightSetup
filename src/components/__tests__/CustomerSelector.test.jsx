@@ -1,55 +1,45 @@
 // @vitest-environment jsdom
 /**
- * QA — CustomerSelector: create, rename and remove customers.
+ * QA — CustomerSelector: the customer list is the shared database plus the
+ * site-config spreadsheets in the shared Drive folder, and the only screen
+ * that creates, imports, renames and removes customers.
  *
- * The only screen that creates and renames files on Drive, so its failure modes
- * are about keeping Drive, the catalog and local state in agreement. A rename
- * touches three things — the Sheet's file name, the companion .xlsx's file name,
- * and the Customer tab — and each can fail independently. What the app must
- * never do is claim a rename happened that Drive rejected, or lose the user's
- * typing because one of the later steps failed.
+ * What must hold: a Drive file that is not in the database yet is shown and
+ * imports on click through ImportCustomerFromDriveService (which is what
+ * writes the rows); an already imported customer is never silently replaced —
+ * "Reload from Drive" asks first; create/rename/delete go through
+ * CustomerRepository and the store only reflects what the server accepted.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, cleanup, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const drive = vi.hoisted(() => ({
-  isSignedIn: vi.fn(() => true),
-  hadGoogleSession: vi.fn(() => true),
-  signInWithGoogle: vi.fn(async () => {}),
-  signOut: vi.fn(),
-  verifySharedFolderAccess: vi.fn(async () => true),
-  listAllConfigFilesInFolder: vi.fn(async () => []),
-  subscribeGoogleAuth: vi.fn(() => () => {}),
-  renameDriveFile: vi.fn(async () => ({})),
-  publishGoogleAuthState: vi.fn(),
+const driveConfigs = vi.hoisted(() => ({
+  listDriveConfigFiles: vi.fn(async () => []),
+}));
+const importer = vi.hoisted(() => ({
+  importCustomerFromDrive: vi.fn(),
+}));
+const repo = vi.hoisted(() => ({
+  createCustomer: vi.fn(),
+  updateCustomerInfo: vi.fn(async () => ({ updatedAt: '2026-09-02T12:00:00.000Z' })),
+  deleteCustomer: vi.fn(async () => {}),
+  loadCustomerFull: vi.fn(async () => null),
+  loadCustomerCard: vi.fn(async () => null),
+  listCustomers: vi.fn(async () => []),
+  subscribeToCustomersTable: vi.fn(() => () => {}),
+  subscribeToCustomerChanges: vi.fn(() => () => {}),
+}));
+const auth = vi.hoisted(() => ({
+  renderSignInButton: vi.fn(async () => {}),
+  onSignInError: vi.fn(() => () => {}),
+  signOut: vi.fn(async () => {}),
 }));
 
-const sync = vi.hoisted(() => ({
-  assertConfigSheetNameAvailable: vi.fn(async () => {}),
-  createCustomerConfigSheet: vi.fn(async ({ friendlyName }) => ({
-    spreadsheetId: 'sheet-new',
-    spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-new/edit',
-    spreadsheetTitle: `${friendlyName}-config`,
-  })),
-  customerSheetQuickLink: (title, url) => ({ id: 1, name: title, url, icon: 'sheets' }),
-  sheetHasConfigData: vi.fn(async () => true),
-  syncCustomerToSheet: vi.fn(async () => {}),
-  loadServersFromNetworkingTab: vi.fn(async () => []),
-  loadDisplaySchedulesFromTab: vi.fn(async () => []),
-  syncAllConfigTabsForCustomer: vi.fn(async () => ({ changedTabs: [] })),
-}));
-
-const openFromDrive = vi.hoisted(() => ({
-  openConfigFromDriveFile: vi.fn(async () => ({
-    customerId: 1, spreadsheetId: 'sheet-1', usedSetupJson: true,
-    setupStatus: 'hydrated', setupError: null,
-  })),
-}));
-
-vi.mock('../../services/GoogleDriveService', () => drive);
-vi.mock('../../services/ConfigSheetSyncService', () => sync);
-vi.mock('../../services/OpenConfigFromDriveService', () => openFromDrive);
+vi.mock('../../services/DriveConfigService', () => driveConfigs);
+vi.mock('../../services/ImportCustomerFromDriveService', () => importer);
+vi.mock('../../services/CustomerRepository', () => repo);
+vi.mock('../../services/GoogleAuthService', () => auth);
 vi.mock('../Weather', () => ({ default: () => <div data-testid="weather" /> }));
 vi.mock('../CustomerSupportDialog', () => ({ default: () => null }));
 vi.mock('../AppSettingsDialog', () => ({ default: () => null }));
@@ -59,22 +49,27 @@ vi.mock('../CustomerMapDialog', () => ({ default: () => null }));
 const { useAppStore } = await import('../../stores/useAppStore');
 const CustomerSelector = (await import('../CustomerSelector')).default;
 
+const SHEET_MIME = 'application/vnd.google-apps.spreadsheet';
+const driveFile = (over = {}) => ({
+  id: 'drive-acme', name: 'Acme-config', mimeType: SHEET_MIME,
+  webViewLink: 'https://docs.google.com/spreadsheets/d/drive-acme/edit', ...over,
+});
+
 const customerRec = (over = {}) => ({
-  id: 1,
+  id: 'row-acme',
   customerId: 'acme',
   code: 'ACME',
   friendlyName: 'Acme',
-  spreadsheetId: 'sheet-1',
-  spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
-  spreadsheetTitle: 'Acme-config',
+  spreadsheetId: null,
   config: {},
   sites: [],
   ...over,
 });
 
-function setStore({ customers = [] } = {}) {
+function setStore({ customers = [], session = { email: 'tech@ensight-technologies.com' } } = {}) {
   useAppStore.setState({
     customers,
+    session,
     selectedCustomerId: null,
     selectedSiteId: null,
     selectedLevelId: null,
@@ -85,7 +80,6 @@ function setStore({ customers = [] } = {}) {
 }
 
 const list = () => useAppStore.getState().customers;
-const named = (name) => list().find((c) => c.friendlyName === name);
 
 /** Labelled by a sibling <Label>; scoped to the dialog, tolerant of " *". */
 function field(labelText) {
@@ -101,97 +95,163 @@ async function submit(user, name) {
   const dialog = await screen.findByRole('dialog');
   await user.click(within(dialog).getByRole('button', { name }));
 }
-function submitButton(name) {
-  return within(screen.getByRole('dialog')).getByRole('button', { name });
-}
 async function openAdd(user) {
   await user.click(screen.getAllByRole('button', { name: /add customer/i })[0]);
 }
 
-/**
- * Edit/Delete live inside the card's collapsed details panel, so the row has to
- * be expanded before either button exists.
- */
-async function rowAction(user, label) {
-  if (!screen.queryByRole('button', { name: label })) {
-    // Several customers can be on screen, so expand the right card: walk up from
-    // the name heading to the card, then use that card's own toggle.
-    const name = label.replace(/^(Edit|Delete) customer /, '');
-    let card = screen.getByRole('heading', { name });
-    while (card && !card.className.includes('self-start')) card = card.parentElement;
-    await user.click(within(card).getByRole('button', { name: /expand details/i }));
-  }
-  await user.click(await screen.findByRole('button', { name: label }));
+/** Expand a customer card (Edit/Delete/Reload live in the collapsed panel). */
+async function expandCard(user, name) {
+  let card = screen.getByRole('heading', { name });
+  while (card && !card.className.includes('self-start')) card = card.parentElement;
+  await user.click(within(card).getByRole('button', { name: /expand details/i }));
+  return card;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  drive.isSignedIn.mockReturnValue(true);
-  drive.listAllConfigFilesInFolder.mockResolvedValue([]);
+  driveConfigs.listDriveConfigFiles.mockResolvedValue([]);
+  importer.importCustomerFromDrive.mockResolvedValue({
+    customerId: 'row-acme', mode: 'created', friendlyName: 'Acme Parking',
+    summary: { sites: 1, levels: 2, zones: 1, devices: 6, servers: 2 }, warnings: [],
+  });
+  repo.createCustomer.mockImplementation(async (payload) => ({
+    customer: { ...payload, id: 'row-new' },
+    updatedAt: '2026-09-02T12:00:00.000Z',
+  }));
   setStore();
 });
 afterEach(cleanup);
 
+// ── DRIVE CATALOG ───────────────────────────────────────────────────────────
+describe('Drive site-configs', () => {
+  it('loads the shared folder as soon as there is a session and lists files not yet imported', async () => {
+    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+    render(<CustomerSelector />);
+
+    expect(await screen.findByRole('heading', { name: 'Acme' })).toBeTruthy();
+    expect(screen.getByText(/available in drive/i)).toBeTruthy();
+    expect(screen.getByText(/not imported yet/i)).toBeTruthy();
+    expect(driveConfigs.listDriveConfigFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not touch Drive while signed out', async () => {
+    setStore({ session: null });
+    render(<CustomerSelector />);
+    await waitFor(() => expect(auth.renderSignInButton).toHaveBeenCalled());
+    expect(driveConfigs.listDriveConfigFiles).not.toHaveBeenCalled();
+  });
+
+  it('shows the failure with a Retry when the folder cannot be listed', async () => {
+    driveConfigs.listDriveConfigFiles.mockRejectedValueOnce(new Error('folder not shared with the service account'));
+    driveConfigs.listDriveConfigFiles.mockResolvedValueOnce([driveFile()]);
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/folder not shared/);
+    await user.click(within(alert).getByRole('button', { name: /retry/i }));
+    expect(await screen.findByRole('heading', { name: 'Acme' })).toBeTruthy();
+  });
+
+  it('imports a Drive-only row on click, shows the summary, and opens it from the dialog', async () => {
+    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+    importer.importCustomerFromDrive.mockImplementation(async ({ store }) => {
+      store.addCustomer(customerRec({ friendlyName: 'Acme Parking' }));
+      return {
+        customerId: 'row-acme', mode: 'created', friendlyName: 'Acme Parking',
+        summary: { sites: 1, levels: 2, zones: 1, devices: 6, servers: 2 },
+        warnings: ['1 DisplayLevels row(s) were skipped: no matching DisplayControllers row or level.'],
+      };
+    });
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await user.click(await screen.findByRole('heading', { name: 'Acme' }));
+
+    await waitFor(() => expect(importer.importCustomerFromDrive).toHaveBeenCalledTimes(1));
+    const args = importer.importCustomerFromDrive.mock.calls[0][0];
+    expect(args.file).toMatchObject({ id: 'drive-acme', name: 'Acme-config' });
+    expect(args.existingCustomer).toBeNull();
+    expect(args.select).toBe(false);
+    expect(typeof args.store.addCustomer).toBe('function');
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/imported from drive/i)).toBeTruthy();
+    expect(within(dialog).getByText(/1 sites · 2 levels · 1 zones · 6 devices · 2 servers/)).toBeTruthy();
+    expect(within(dialog).getByText(/DisplayLevels row\(s\) were skipped/)).toBeTruthy();
+
+    await user.click(within(dialog).getByRole('button', { name: /open/i }));
+    await waitFor(() => expect(useAppStore.getState().selectedCustomerId).toBe('row-acme'));
+    expect(useAppStore.getState().currentView).toBe('sites');
+  });
+
+  it('reports an import failure inside the dialog and saves nothing locally', async () => {
+    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+    importer.importCustomerFromDrive.mockRejectedValueOnce(new Error('Customer row insert failed'));
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await user.click(await screen.findByRole('heading', { name: 'Acme' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText(/Customer row insert failed/)).toBeTruthy();
+    expect(list()).toHaveLength(0);
+    expect(within(dialog).getByRole('button', { name: /retry/i })).toBeTruthy();
+  });
+
+  it('asks before reloading an imported customer from Drive, then replaces that customer', async () => {
+    const existing = customerRec({ spreadsheetId: 'drive-acme' });
+    setStore({ customers: [existing] });
+    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await waitFor(() => expect(driveConfigs.listDriveConfigFiles).toHaveBeenCalled());
+    await expandCard(user, 'Acme');
+    await user.click(await screen.findByRole('button', { name: /reload from drive/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/replaces this customer/i)).toBeTruthy();
+    expect(importer.importCustomerFromDrive).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole('button', { name: /^reload from drive$/i }));
+    await waitFor(() => expect(importer.importCustomerFromDrive).toHaveBeenCalledTimes(1));
+    expect(importer.importCustomerFromDrive.mock.calls[0][0].existingCustomer).toMatchObject({ id: 'row-acme' });
+  });
+
+  it('opens an imported customer directly without going back to Drive', async () => {
+    setStore({ customers: [customerRec({ spreadsheetId: 'drive-acme' })] });
+    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await user.click(await screen.findByRole('heading', { name: 'Acme' }));
+    await waitFor(() => expect(useAppStore.getState().selectedCustomerId).toBe('row-acme'));
+    expect(importer.importCustomerFromDrive).not.toHaveBeenCalled();
+    expect(screen.queryByText(/available in drive/i)).toBeNull();
+  });
+});
+
 // ── ADD ─────────────────────────────────────────────────────────────────────
 describe('add a customer', () => {
-  it('creates the config sheet and records its details', async () => {
+  it('creates the row through the repository and adds what the server returned', async () => {
     const user = userEvent.setup();
     render(<CustomerSelector />);
 
     await openAdd(user);
     await user.type(field('Friendly Name'), 'Beta Health');
-    await submit(user, /^add customer$/i);
-
-    await waitFor(() => expect(list()).toHaveLength(1));
-    const added = list()[0];
-    expect(added.friendlyName).toBe('Beta Health');
-    expect(added.spreadsheetId).toBe('sheet-new');
-    expect(added.spreadsheetTitle).toBe('Beta Health-config');
-    await waitFor(() => expect(sync.createCustomerConfigSheet).toHaveBeenCalled());
-  });
-
-  it('seeds a first site carrying the config sheet link', async () => {
-    const user = userEvent.setup();
-    render(<CustomerSelector />);
-
-    await openAdd(user);
-    await user.type(field('Friendly Name'), 'Beta Health');
-    await submit(user, /^add customer$/i);
-
-    await waitFor(() => expect(list()).toHaveLength(1));
-    const site = list()[0].sites[0];
-    expect(site).toBeTruthy();
-    expect(site.levels).toHaveLength(1);
-    expect(site.quickLinks.some((l) => l.icon === 'sheets')).toBe(true);
-  });
-
-  it('stores the address on both the customer and its first site', async () => {
-    const user = userEvent.setup();
-    render(<CustomerSelector />);
-
-    await openAdd(user);
-    await user.type(field('Friendly Name'), 'Beta Health');
-    await user.type(field('Address'), '100 Main St');
     await user.type(field('City'), 'Boston');
     await submit(user, /^add customer$/i);
 
     await waitFor(() => expect(list()).toHaveLength(1));
-    expect(list()[0].config.address).toBe('100 Main St');
+    expect(repo.createCustomer).toHaveBeenCalledTimes(1);
+    expect(repo.createCustomer.mock.calls[0][0]).toMatchObject({ customerId: 'beta-health', friendlyName: 'Beta Health' });
+    expect(list()[0].id).toBe('row-new');
     expect(list()[0].config.city).toBe('Boston');
-    expect(list()[0].sites[0].address).toBe('100 Main St');
+    expect(list()[0].sites[0].levels).toHaveLength(1);
   });
 
-  it('will not submit an empty name', async () => {
-    const user = userEvent.setup();
-    render(<CustomerSelector />);
-
-    await openAdd(user);
-
-    expect(submitButton(/^add customer$/i).disabled).toBe(true);
-    expect(sync.createCustomerConfigSheet).not.toHaveBeenCalled();
-  });
-
-  it('refuses a duplicate name before creating anything on Drive', async () => {
+  it('refuses a duplicate name before calling the server', async () => {
     const user = userEvent.setup();
     setStore({ customers: [customerRec({ friendlyName: 'Acme' })] });
     render(<CustomerSelector />);
@@ -200,199 +260,54 @@ describe('add a customer', () => {
     await user.type(field('Friendly Name'), 'acme');
     await submit(user, /^add customer$/i);
 
-    await waitFor(() => expect(screen.getByText(/already exists/i)).toBeTruthy());
-    expect(list()).toHaveLength(1);
-    // Nothing is created on Drive, so no orphan sheet is left behind.
-    expect(sync.createCustomerConfigSheet).not.toHaveBeenCalled();
+    expect(await screen.findByText(/already exists/i)).toBeTruthy();
+    expect(repo.createCustomer).not.toHaveBeenCalled();
   });
 
-  it('refuses to create anything while signed out', async () => {
+  it('adds nothing when the server rejects the create', async () => {
+    repo.createCustomer.mockRejectedValueOnce(new Error('Database is not configured'));
     const user = userEvent.setup();
-    render(<CustomerSelector />);
-
-    await openAdd(user);
-    await user.type(field('Friendly Name'), 'Beta Health');
-    drive.isSignedIn.mockReturnValue(false);
-    await submit(user, /^add customer$/i);
-
-    await waitFor(() => expect(screen.getByText(/sign in with google/i)).toBeTruthy());
-    expect(sync.createCustomerConfigSheet).not.toHaveBeenCalled();
-    expect(list()).toHaveLength(0);
-  });
-
-  it('adds nothing when the sheet cannot be created', async () => {
-    const user = userEvent.setup();
-    sync.createCustomerConfigSheet.mockRejectedValueOnce(new Error('Sheets API is not enabled'));
     render(<CustomerSelector />);
 
     await openAdd(user);
     await user.type(field('Friendly Name'), 'Beta Health');
     await submit(user, /^add customer$/i);
 
-    await waitFor(() => expect(screen.getByText(/not enabled/i)).toBeTruthy());
-    // A customer with no sheet could never be saved, so it is not added at all.
+    expect(await screen.findByText(/Database is not configured/)).toBeTruthy();
     expect(list()).toHaveLength(0);
   });
 });
 
-// ── EDIT / RENAME ───────────────────────────────────────────────────────────
-describe('rename a customer', () => {
-  it('renames the Drive file and syncs the Customer tab', async () => {
-    const user = userEvent.setup();
+// ── EDIT / DELETE ───────────────────────────────────────────────────────────
+describe('edit and remove a customer', () => {
+  it('renames through the repository and keeps the server timestamp', async () => {
     setStore({ customers: [customerRec()] });
+    const user = userEvent.setup();
     render(<CustomerSelector />);
 
-    await rowAction(user, 'Edit customer Acme');
-    const name = field('Friendly Name');
-    await user.clear(name);
-    await user.type(name, 'Acme Health');
+    await expandCard(user, 'Acme');
+    await user.click(await screen.findByRole('button', { name: /edit customer acme/i }));
+    const input = field('Friendly Name');
+    await user.clear(input);
+    await user.type(input, 'Acme Parking');
     await submit(user, /^save$/i);
 
-    await waitFor(() => expect(named('Acme Health')).toBeTruthy());
-    expect(drive.renameDriveFile).toHaveBeenCalledWith('sheet-1', 'Acme Health-config');
-    expect(named('Acme Health').spreadsheetTitle).toBe('Acme Health-config');
-    await waitFor(() => expect(sync.syncCustomerToSheet).toHaveBeenCalled());
+    await waitFor(() => expect(repo.updateCustomerInfo).toHaveBeenCalledWith('row-acme', expect.objectContaining({ friendlyName: 'Acme Parking' })));
+    expect(list()[0].friendlyName).toBe('Acme Parking');
+    expect(list()[0].lastSetupSavedAt).toBe('2026-09-02T12:00:00.000Z');
   });
 
-  it('checks the new name is free on Drive first', async () => {
-    const user = userEvent.setup();
+  it('asks first, then deletes on the server and locally', async () => {
     setStore({ customers: [customerRec()] });
-    render(<CustomerSelector />);
-
-    await rowAction(user, 'Edit customer Acme');
-    const name = field('Friendly Name');
-    await user.clear(name);
-    await user.type(name, 'Acme Health');
-    await submit(user, /^save$/i);
-
-    await waitFor(() => expect(sync.assertConfigSheetNameAvailable).toHaveBeenCalled());
-    // Its own files are excluded, so retrying a half-done rename is not blocked
-    // by the file it already renamed.
-    const call = sync.assertConfigSheetNameAvailable.mock.calls.at(-1);
-    expect(call[1].excludeFileIds).toContain('sheet-1');
-  });
-
-  it('changes nothing locally when Drive rejects the rename', async () => {
     const user = userEvent.setup();
-    setStore({ customers: [customerRec()] });
-    drive.renameDriveFile.mockRejectedValueOnce(new Error('Drive rename failed'));
     render(<CustomerSelector />);
 
-    await rowAction(user, 'Edit customer Acme');
-    const name = field('Friendly Name');
-    await user.clear(name);
-    await user.type(name, 'Acme Health');
-    await submit(user, /^save$/i);
+    await expandCard(user, 'Acme');
+    await user.click(await screen.findByRole('button', { name: /delete customer acme/i }));
+    expect(repo.deleteCustomer).not.toHaveBeenCalled();
+    await submit(user, /^delete$/i);
 
-    await waitFor(() => expect(screen.getByText(/rename failed/i)).toBeTruthy());
-    // Claiming a rename Drive refused would leave the catalog disagreeing.
-    expect(named('Acme Health')).toBeUndefined();
-    expect(named('Acme')).toBeTruthy();
-  });
-
-  it('rolls the Sheet name back when the companion xlsx cannot be renamed', async () => {
-    const user = userEvent.setup();
-    setStore({
-      customers: [customerRec({ sourceFileId: 'xlsx-1', sourceFileName: 'Acme-config.xlsx' })],
-    });
-    // The Sheet renames, the xlsx does not.
-    drive.renameDriveFile
-      .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new Error('xlsx rename failed'));
-    render(<CustomerSelector />);
-
-    await rowAction(user, 'Edit customer Acme');
-    const name = field('Friendly Name');
-    await user.clear(name);
-    await user.type(name, 'Acme Health');
-    await submit(user, /^save$/i);
-
-    await waitFor(() => expect(screen.getByText(/xlsx rename failed/i)).toBeTruthy());
-    // The Sheet is put back, so the two file-name stems stay matched and the
-    // catalog keeps showing one row rather than two.
-    expect(drive.renameDriveFile).toHaveBeenCalledWith('sheet-1', 'Acme-config');
-    expect(named('Acme Health')).toBeUndefined();
-  });
-
-  it('keeps the rename when only the Customer tab sync fails', async () => {
-    const user = userEvent.setup();
-    setStore({ customers: [customerRec()] });
-    sync.syncCustomerToSheet.mockRejectedValueOnce(new Error('Sheets rate limit reached'));
-    render(<CustomerSelector />);
-
-    await rowAction(user, 'Edit customer Acme');
-    const name = field('Friendly Name');
-    await user.clear(name);
-    await user.type(name, 'Acme Health');
-    await submit(user, /^save$/i);
-
-    await waitFor(() => expect(screen.getByText(/rate limit/i)).toBeTruthy());
-    // The file really was renamed on Drive, so local state has to match it or
-    // a retry would try to rename an already-renamed file.
-    expect(named('Acme Health')).toBeTruthy();
-    expect(named('Acme Health').spreadsheetTitle).toBe('Acme Health-config');
-  });
-
-  it('refuses a name another customer already uses', async () => {
-    const user = userEvent.setup();
-    setStore({
-      customers: [customerRec({ id: 1, friendlyName: 'Acme' }), customerRec({ id: 2, customerId: 'beta', friendlyName: 'Beta' })],
-    });
-    render(<CustomerSelector />);
-
-    await rowAction(user, 'Edit customer Acme');
-    const name = field('Friendly Name');
-    await user.clear(name);
-    await user.type(name, 'Beta');
-    await submit(user, /^save$/i);
-
-    await waitFor(() => expect(screen.getByText(/already exists/i)).toBeTruthy());
-    expect(drive.renameDriveFile).not.toHaveBeenCalled();
-  });
-
-  it('an address-only edit syncs without renaming anything', async () => {
-    const user = userEvent.setup();
-    setStore({ customers: [customerRec()] });
-    render(<CustomerSelector />);
-
-    await rowAction(user, 'Edit customer Acme');
-    await user.type(field('Address'), '200 Side St');
-    await submit(user, /^save$/i);
-
-    await waitFor(() => expect(named('Acme').config.address).toBe('200 Side St'));
-    expect(drive.renameDriveFile).not.toHaveBeenCalled();
-    await waitFor(() => expect(sync.syncCustomerToSheet).toHaveBeenCalled());
-  });
-});
-
-// ── DELETE ──────────────────────────────────────────────────────────────────
-describe('remove a customer', () => {
-  it('asks first and removes only from the app, never from Drive', async () => {
-    const user = userEvent.setup();
-    setStore({ customers: [customerRec()] });
-    render(<CustomerSelector />);
-
-    await rowAction(user, 'Delete customer Acme');
-
-    // The wording matters: the sheet survives, so this is not destructive.
-    await waitFor(() => expect(screen.getByText(/remove "Acme" from this app/i)).toBeTruthy());
-    expect(list()).toHaveLength(1);
-
-    const dialog = screen.getByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: /^(delete|remove)$/i }));
-
-    await waitFor(() => expect(list()).toHaveLength(0));
-  });
-
-  it('leaves the customer alone when the confirmation is dismissed', async () => {
-    const user = userEvent.setup();
-    setStore({ customers: [customerRec()] });
-    render(<CustomerSelector />);
-
-    await rowAction(user, 'Delete customer Acme');
-    const dialog = await screen.findByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: /cancel/i }));
-
-    expect(list()).toHaveLength(1);
+    await waitFor(() => expect(repo.deleteCustomer).toHaveBeenCalledWith('row-acme'));
+    expect(list()).toHaveLength(0);
   });
 });

@@ -19,7 +19,6 @@
  */
 /* global Buffer, process */
 import { createClient } from '@supabase/supabase-js';
-import { GoogleAuth } from 'google-auth-library';
 import {
   CONFIG_SHEET_TABS,
   CONFIG_TAB_HEADERS,
@@ -40,6 +39,9 @@ import {
 } from '../src/lib/configSheetSchema.js';
 import { dbCustomerToLegacy, CUSTOMER_FULL_TREE_SELECT } from '../src/lib/customerRowMapping.js';
 import { requireEnsightSession } from './_auth.js';
+import {
+  SHEETS_API, DRIVE_API, SHEETS_WRITE_SCOPES, googleAccessToken as serviceAccountToken, googleFetch, sharedFolderId,
+} from './_google.js';
 
 /**
  * Compliance gate: this endpoint's one write to the app's own production
@@ -52,12 +54,6 @@ import { requireEnsightSession } from './_auth.js';
 const LIVE_DB_WRITE_ENABLED = false;
 
 const MAX_BODY_BYTES = 256 * 1024;
-const SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
-const DRIVE_API = 'https://www.googleapis.com/drive/v3';
-const GOOGLE_SCOPES = [
-  'https://www.googleapis.com/auth/spreadsheets',
-  'https://www.googleapis.com/auth/drive',
-];
 
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:5173',
@@ -121,33 +117,9 @@ async function requireCaller(req) {
   return requireEnsightSession(req);
 }
 
-async function googleAccessToken() {
-  const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
-  if (!keyJson) {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY is not configured on the server.');
-  }
-  const credentials = JSON.parse(keyJson);
-  const auth = new GoogleAuth({ credentials, scopes: GOOGLE_SCOPES });
-  const client = await auth.getClient();
-  const { token } = await client.getAccessToken();
-  if (!token) throw new Error('Could not obtain a Google access token.');
-  return token;
-}
-
-async function googleFetch(url, token, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Google API error (${response.status}): ${text.slice(0, 300)}`);
-  }
-  return response.json();
+/** Service-account token with Sheets + Drive write scope (see api/_google.js). */
+function googleAccessToken() {
+  return serviceAccountToken(SHEETS_WRITE_SCOPES);
 }
 
 /** Find or create the customer's config spreadsheet, tabs included. */
@@ -156,10 +128,7 @@ async function ensureSpreadsheet(token, customer) {
     return { spreadsheetId: customer.spreadsheetId, spreadsheetUrl: customer.spreadsheetUrl };
   }
 
-  const folderId = process.env.GOOGLE_SHARED_FOLDER_ID;
-  if (!folderId) {
-    throw new Error('GOOGLE_SHARED_FOLDER_ID is not configured on the server.');
-  }
+  const folderId = sharedFolderId();
 
   // Locked in at customer-creation time (customers.config_sheet_name) — never
   // recomputed from the current friendly_name, so a later rename can't change
@@ -294,7 +263,7 @@ function buildAllTabRows(customer) {
   const sensorGroupRows = garages.flatMap((g) => (g.sensorGroups || []).map((sg) => buildSensorGroupSheetRow(g, null, sg)));
   const networkingRows = (garages[0]?.servers || []).map((s) => buildNetworkingSheetRow(s));
   const displaySchedulesRows = (customer.displaySchedules || []).map((s) => [
-    s.StartTime || '', s.EndTime || '', s.Day || '',
+    s.DisplayName || '', s.StartTime || '', s.EndTime || '', s.Day || '',
     s.CountPosition?.x ?? '', s.CountPosition?.y ?? '',
     s.CountPosition?.width ?? '', s.CountPosition?.height ?? '',
     s.FilePath || '', s.Garage1 || '', s.Level1 || '', s.Garage2 || '', s.Level2 || '',
