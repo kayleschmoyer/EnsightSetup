@@ -11,15 +11,20 @@
  * (granted once per browser via CustomerSelector's "Grant Drive Access") —
  * no service account, nothing server-side reads Drive for this. A first
  * import creates the customers row (and the whole tree) in one POST; a
- * re-import of an already imported customer replaces its tree with what the
- * sheet says now (forced, no updated_at guard — the caller has already asked
- * the user to confirm). Either way the store is hydrated from the response,
+ * re-import of an already imported customer either merges the fresh sheet
+ * data onto the existing tree (default — keeps placements, floor plans,
+ * photos, contacts, quick links and MDF/IDF locations for anything the
+ * sheet still lists, dropping only what it no longer lists after reporting
+ * it in `warnings`) or replaces the tree outright (`mode: 'replace'`,
+ * forced, no updated_at guard — the caller has already asked the user to
+ * confirm either way). Either way the store is hydrated from the response,
  * marked 'hydrated', and the customer is opened.
  */
 import { downloadConfigFile } from './GoogleDriveService';
 import { parseExcelFile } from './ExcelParserService';
 import { createCustomer, saveCustomerFull } from './CustomerRepository';
-import { buildCustomerFromWorkbook } from '../lib/importedWorkbookMapping';
+import { buildCustomerFromWorkbook, summarizeImportedSites } from '../lib/importedWorkbookMapping';
+import { mergeImportedCustomer } from '../lib/importMergeUtils';
 import { findLocalCustomerForCatalogRow } from '../lib/driveConfigCatalog';
 
 function assertNotAborted(signal) {
@@ -49,8 +54,10 @@ export function findCustomerForDriveFile(customers = [], file, { customerId = nu
  *   already matched one (falls back to findCustomerForDriveFile)
  * @param {boolean} [params.select] - open the customer once imported (default true); the
  *   selector passes false so it can show the import summary first
+ * @param {'merge'|'replace'} [params.mode] - how to reconcile with an existing customer
+ *   (default 'merge'); ignored when there is no existing customer to reconcile with
  * @param {AbortSignal|null} [params.signal]
- * @returns {Promise<{ customerId: string, mode: 'created'|'replaced', summary: object,
+ * @returns {Promise<{ customerId: string, mode: 'created'|'merged'|'replaced', summary: object,
  *   warnings: string[], friendlyName: string }>}
  */
 export async function importCustomerFromDrive({
@@ -59,6 +66,7 @@ export async function importCustomerFromDrive({
   store,
   existingCustomer = null,
   select = true,
+  mode = 'merge',
   signal = null,
 }) {
   if (!file?.id) throw new Error('No Drive file selected.');
@@ -85,9 +93,8 @@ export async function importCustomerFromDrive({
     : buildCustomerFromWorkbook(parsed, { file: sourceFile, existingCustomer: target });
   assertNotAborted(signal);
 
-  const { warnings, summary, sourceFileName, ...customer } = built;
-
   if (!target) {
+    const { warnings, summary, sourceFileName, ...customer } = built;
     const created = await createCustomer(customer);
     const entry = store.addCustomer({
       ...created.customer,
@@ -99,9 +106,13 @@ export async function importCustomerFromDrive({
     return { customerId: entry.id, mode: 'created', summary, warnings, friendlyName: customer.friendlyName };
   }
 
+  const reconciled = mode === 'merge' ? mergeImportedCustomer(target, built) : built;
+  const { warnings, summary: builtSummary, sourceFileName, ...customer } = reconciled;
+  const summary = mode === 'merge' ? summarizeImportedSites(reconciled.sites) : builtSummary;
+
   const result = await saveCustomerFull(target.id, customer, { expectedUpdatedAt: null });
   if (result.status !== 'saved') {
-    throw new Error('The customer could not be replaced — someone else is saving it right now. Try again.');
+    throw new Error(`The customer could not be ${mode === 'merge' ? 'merged' : 'replaced'} — someone else is saving it right now. Try again.`);
   }
   store.updateCustomer(target.id, {
     ...customer,
@@ -110,5 +121,11 @@ export async function importCustomerFromDrive({
   });
   store.setHydration?.(target.id, 'hydrated');
   if (select) store.selectCustomer(target.id);
-  return { customerId: target.id, mode: 'replaced', summary, warnings, friendlyName: customer.friendlyName };
+  return {
+    customerId: target.id,
+    mode: mode === 'merge' ? 'merged' : 'replaced',
+    summary,
+    warnings,
+    friendlyName: customer.friendlyName,
+  };
 }
