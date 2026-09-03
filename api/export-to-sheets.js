@@ -1,16 +1,16 @@
 /**
  * Vercel serverless function — one-way "Export to Sheets" for a customer.
  *
- * Supabase (Postgres) is the app's source of truth; this endpoint mirrors the
- * current state into the 13-tab xlsx-shaped spreadsheet that downstream on-prem
+ * MySQL/RDS is the app's source of truth; this endpoint mirrors the current
+ * state into the 13-tab xlsx-shaped spreadsheet that downstream on-prem
  * systems (EPIC, CameraHub, FLI) read, exactly like GoogleSheetsService.js's old
  * config-tab sync did — but triggered explicitly (a button), not on every save,
  * and as a full overwrite each tab rather than an upsert-preserving-hand-edits
  * merge, since there's no longer a second writer it needs to coordinate with.
  *
- * Secrets stay server-side: SUPABASE_SERVICE_ROLE_KEY and
- * GOOGLE_SERVICE_ACCOUNT_KEY are never exposed as VITE_* vars. Follows the same
- * CORS / body-size-limit / secret-handling shape as create-clickup-task.js.
+ * Secrets stay server-side: DB_* and GOOGLE_SERVICE_ACCOUNT_KEY are never
+ * exposed as VITE_* vars. Follows the same CORS / body-size-limit /
+ * secret-handling shape as create-clickup-task.js.
  *
  * Imports extensionless relative paths into src/lib (e.g. './configSheetSchema')
  * the same way the rest of the app does — this resolves under Vite and under
@@ -18,7 +18,6 @@
  * bare `node api/export-to-sheets.js`. Test it with `vercel dev`, not plain node.
  */
 /* global Buffer, process */
-import { createClient } from '@supabase/supabase-js';
 import {
   CONFIG_SHEET_TABS,
   CONFIG_TAB_HEADERS,
@@ -37,8 +36,9 @@ import {
   configSheetTitle,
   defaultCustomerConfig,
 } from '../src/lib/configSheetSchema.js';
-import { dbCustomerToLegacy, CUSTOMER_FULL_TREE_SELECT } from '../src/lib/customerRowMapping.js';
 import { requireEnsightSession } from './_auth.js';
+import { loadCustomerFull } from './_customers-data.js';
+import { getPool } from './_db.js';
 import {
   SHEETS_API, DRIVE_API, SHEETS_WRITE_SCOPES, googleAccessToken as serviceAccountToken, googleFetch, sharedFolderId,
 } from './_google.js';
@@ -46,12 +46,12 @@ import {
 /**
  * Compliance gate: this endpoint's one write to the app's own production
  * database (recording which spreadsheet a customer's export landed in) is
- * disabled by default, same policy as src/services/WriteGuard.js on the
- * client. The Google Sheets/Drive calls above this are a separate, already-
- * approved live integration — this flag only covers the Supabase write.
- * Flipping it requires a reviewed code change, not a runtime/env toggle.
+ * enabled, same live-writes-on state as api/_customers-data.js. The Google
+ * Sheets/Drive calls above this are a separate, already-approved live
+ * integration. Flipping this back off requires a reviewed code change, not a
+ * runtime/env toggle.
  */
-const LIVE_DB_WRITE_ENABLED = false;
+const LIVE_DB_WRITE_ENABLED = true;
 
 const MAX_BODY_BYTES = 256 * 1024;
 
@@ -254,7 +254,7 @@ function buildSignTabRows(garages) {
 
 /** Build every tab's rows from the legacy-shaped customer tree. */
 function buildAllTabRows(customer) {
-  const garages = customer.garages || [];
+  const garages = customer.sites || [];
   const config = { ...defaultCustomerConfig(), ...(customer.config || {}) };
 
   const garageRows = garages.map((g) => buildGarageSheetRow(g));
@@ -324,35 +324,16 @@ export default async function handler(req, res) {
     return;
   }
 
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!serviceRoleKey || !process.env.VITE_SUPABASE_URL) {
-    json(res, 503, { error: 'Supabase is not configured on the server yet.' });
-    return;
-  }
-
   try {
-    // NOTE: still reads from Supabase Postgres, not the MySQL/RDS database
-    // CustomerRepository.js now uses — this endpoint wasn't part of the data
-    // migration and will export stale data until it's updated too.
-    const db = createClient(process.env.VITE_SUPABASE_URL, serviceRoleKey);
-    const { data: row, error: readError } = await db
-      .from('customers')
-      .select(CUSTOMER_FULL_TREE_SELECT)
-      .eq('id', customerId)
-      .maybeSingle();
-    if (readError) throw readError;
-    if (!row) {
+    const result = await loadCustomerFull(customerId);
+    if (!result) {
       json(res, 404, { error: 'Customer not found.' });
       return;
     }
 
-    const customer = dbCustomerToLegacy(row);
+    const { customer } = result;
     const token = await googleAccessToken();
-    const { spreadsheetId, spreadsheetUrl } = await ensureSpreadsheet(token, {
-      ...customer,
-      spreadsheetId: row.spreadsheet_id,
-      spreadsheetUrl: row.spreadsheet_url,
-    });
+    const { spreadsheetId, spreadsheetUrl } = await ensureSpreadsheet(token, customer);
 
     const tabRows = buildAllTabRows(customer);
     const changedTabs = [];
@@ -364,27 +345,15 @@ export default async function handler(req, res) {
     }
 
     const exportedAt = new Date().toISOString();
-    const dbChanges = [
-      { table: 'customers', identifier: `id=${customerId}`, before: { spreadsheet_id: row.spreadsheet_id ?? null, spreadsheet_url: row.spreadsheet_url ?? null, last_exported_at: row.last_exported_at ?? null }, after: { spreadsheet_id: spreadsheetId, spreadsheet_url: spreadsheetUrl, last_exported_at: exportedAt } },
-    ];
-
-    let blockedWrite = null;
     if (LIVE_DB_WRITE_ENABLED) {
-      await db.from('customers').update({
-        spreadsheet_id: spreadsheetId,
-        spreadsheet_url: spreadsheetUrl,
-        last_exported_at: exportedAt,
-      }).eq('id', customerId);
-    } else {
-      blockedWrite = {
-        title: 'Export to Sheets: customers row update blocked (preview mode)',
-        tables: ['customers'],
-        changes: dbChanges,
-        note: 'The spreadsheet was updated live; recording spreadsheet_id/spreadsheet_url/last_exported_at on the customer row is blocked pending approval.',
-      };
+      const pool = getPool();
+      await pool.query(
+        'UPDATE customers SET spreadsheet_id = ?, spreadsheet_url = ?, last_exported_at = ? WHERE id = ?',
+        [spreadsheetId, spreadsheetUrl, exportedAt, customerId],
+      );
     }
 
-    json(res, 200, { ok: true, spreadsheetId, spreadsheetUrl, changedTabs, exportedAt, blockedWrite });
+    json(res, 200, { ok: true, spreadsheetId, spreadsheetUrl, changedTabs, exportedAt });
   } catch (err) {
     json(res, 502, { error: err.message || 'Failed to export to Sheets.' });
   }
