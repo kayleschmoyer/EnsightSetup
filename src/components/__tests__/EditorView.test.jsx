@@ -37,7 +37,6 @@ const sync = vi.hoisted(() => ({
 
 const harness = vi.hoisted(() => ({ inspector: null, canvas: null, wizard: null }));
 
-vi.mock('../../services/ConfigSheetSyncService', () => sync);
 
 vi.mock('../MapCanvas', () => ({
   default: (props) => {

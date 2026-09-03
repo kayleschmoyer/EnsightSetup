@@ -26,7 +26,6 @@ const sync = vi.hoisted(() => ({
   deviceAfterCameraSync: (d) => d,
 }));
 
-vi.mock('../../services/ConfigSheetSyncService', () => sync);
 vi.mock('../ContactsSidebar', () => ({ default: () => <div data-testid="contacts" /> }));
 vi.mock('../Weather', () => ({ default: () => <div data-testid="weather" /> }));
 vi.mock('../CustomerMapDialog', () => ({ default: () => null }));
