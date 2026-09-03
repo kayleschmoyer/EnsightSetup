@@ -40,12 +40,6 @@ const layout = vi.hoisted(() => {
   };
 });
 
-const sync = vi.hoisted(() => ({
-  loadServersFromNetworkingTab: vi.fn(async () => []),
-  loadDisplaySchedulesFromTab: vi.fn(async () => null),
-  syncAllConfigTabsForCustomer: vi.fn(async () => ({ changedTabs: [] })),
-}));
-
 const drive = vi.hoisted(() => ({ downloadConfigFile: vi.fn(async () => new ArrayBuffer(8)) }));
 const parser = vi.hoisted(() => ({
   parseExcelFile: vi.fn(() => ({
@@ -53,8 +47,6 @@ const parser = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock('../../services/LayoutPersistenceService', () => layout);
-vi.mock('../../services/ConfigSheetSyncService', () => sync);
 vi.mock('../../services/GoogleDriveService', () => drive);
 vi.mock('../../services/ExcelParserService', () => parser);
 

@@ -20,7 +20,6 @@ const sync = vi.hoisted(() => ({
   syncAllConfigTabsForCustomer: vi.fn(async () => ({ changedTabs: [] })),
 }));
 
-vi.mock('../../services/ConfigSheetSyncService', () => sync);
 vi.mock('../Weather', () => ({ default: () => <div data-testid="weather" /> }));
 vi.mock('../SetupSyncIndicator', () => ({ default: () => <div data-testid="setup-sync" /> }));
 
