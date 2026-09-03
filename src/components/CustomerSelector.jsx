@@ -191,6 +191,7 @@ export default function CustomerSelector() {
   const [importOutcome, setImportOutcome] = useState(null);
   const openConfigGenerationRef = useRef(0);
   const openAbortRef = useRef(null);
+  const lastImportModeRef = useRef('merge');
   const catalogFetchGenRef = useRef(0);
   const [expandedCustomerIds, setExpandedCustomerIds] = useState(() => new Set());
   const [showMap, setShowMap] = useState(false);
@@ -348,7 +349,7 @@ export default function CustomerSelector() {
    * catalog already prefers the native Google Sheet over a companion .xlsx
    * (mergeConfigFilesIntoCatalog), so the row's file is the one to read.
    */
-  const importFromDrive = useCallback(async (row) => {
+  const importFromDrive = useCallback(async (row, { mode = 'merge' } = {}) => {
     if (!row?.catalogRow?.file || openingConfig) return;
     const generation = ++openConfigGenerationRef.current;
     try {
@@ -358,6 +359,7 @@ export default function CustomerSelector() {
     }
     const controller = new AbortController();
     openAbortRef.current = controller;
+    lastImportModeRef.current = mode;
     setConfirmOpenRow(row);
     setOpeningConfig(true);
     setOpenConfigError('');
@@ -374,6 +376,7 @@ export default function CustomerSelector() {
         },
         existingCustomer: row.customer ?? null,
         select: false,
+        mode,
         signal: controller.signal,
       });
       if (generation !== openConfigGenerationRef.current) return;
@@ -426,9 +429,19 @@ export default function CustomerSelector() {
     selectCustomer(confirmOpenRow.customer.id);
   }, [confirmOpenRow, selectCustomer]);
 
+  const handleConfirmMergeFromDrive = useCallback(() => {
+    if (!confirmOpenRow) return;
+    void importFromDrive(confirmOpenRow, { mode: 'merge' });
+  }, [confirmOpenRow, importFromDrive]);
+
   const handleConfirmReloadFromDrive = useCallback(() => {
     if (!confirmOpenRow) return;
-    void importFromDrive(confirmOpenRow);
+    void importFromDrive(confirmOpenRow, { mode: 'replace' });
+  }, [confirmOpenRow, importFromDrive]);
+
+  const handleRetryImport = useCallback(() => {
+    if (!confirmOpenRow) return;
+    void importFromDrive(confirmOpenRow, { mode: lastImportModeRef.current });
   }, [confirmOpenRow, importFromDrive]);
 
   const handleOpenImported = useCallback(() => {
@@ -1055,9 +1068,13 @@ export default function CustomerSelector() {
           <DialogHeader>
             <DialogTitle>
               {confirmOpenMode === 'reload' && !openingConfig && !openConfigError && 'Reload from Drive?'}
-              {confirmOpenMode === 'done' && (importOutcome?.mode === 'replaced' ? 'Reloaded from Drive' : 'Imported from Drive')}
+              {confirmOpenMode === 'done' && ({
+                created: 'Imported from Drive',
+                merged: 'Merged with sheet',
+                replaced: 'Reloaded from Drive',
+              }[importOutcome?.mode] || 'Imported from Drive')}
               {confirmOpenMode !== 'done' && (openingConfig
-                ? 'Importing…'
+                ? (confirmOpenMode === 'reload' ? (lastImportModeRef.current === 'replace' ? 'Reloading…' : 'Merging…') : 'Importing…')
                 : (openConfigError ? 'Could not import' : (confirmOpenMode === 'reload' ? '' : 'Import')))}
             </DialogTitle>
             <DialogDescription className="space-y-2">
@@ -1066,9 +1083,11 @@ export default function CustomerSelector() {
               </span>
               {confirmOpenMode === 'reload' && !openingConfig && !openConfigError && (
                 <span className="block text-muted-foreground">
-                  Replaces this customer&apos;s sites, levels and devices in the shared database with
-                  what the sheet says now. Device placements, floor plans and photos that are not
-                  on the sheet are lost.
+                  <strong className="text-foreground">Merge with sheet</strong> (recommended) updates
+                  what changed on the sheet and keeps your device placements, floor plans, photos,
+                  contacts and quick links. <strong className="text-foreground">Reload from Drive</strong> replaces
+                  this customer&apos;s sites, levels and devices outright — placements, floor plans and
+                  photos not on the sheet are lost.
                 </span>
               )}
               {openingConfig && (
@@ -1121,10 +1140,16 @@ export default function CustomerSelector() {
                 Open without reloading
               </Button>
             )}
+            {confirmOpenMode === 'reload' && !openConfigError && (
+              <Button variant="outline" onClick={handleConfirmReloadFromDrive} disabled={openingConfig}>
+                {openingConfig && lastImportModeRef.current === 'replace' ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Reload from Drive
+              </Button>
+            )}
             {(confirmOpenMode === 'reload' || openConfigError) && confirmOpenMode !== 'done' && (
-              <Button onClick={handleConfirmReloadFromDrive} disabled={openingConfig}>
-                {openingConfig ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                {openConfigError ? 'Retry' : 'Reload from Drive'}
+              <Button onClick={openConfigError ? handleRetryImport : handleConfirmMergeFromDrive} disabled={openingConfig}>
+                {openingConfig && lastImportModeRef.current === 'merge' ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                {openConfigError ? 'Retry' : 'Merge with sheet'}
               </Button>
             )}
             {confirmOpenMode === 'done' && (

@@ -294,7 +294,7 @@ describe('Drive site-configs', () => {
     expect(within(dialog).getByRole('button', { name: /retry/i })).toBeTruthy();
   });
 
-  it('asks before reloading an imported customer from Drive, then replaces that customer', async () => {
+  it('asks before reloading an imported customer, offering merge and full reload', async () => {
     const existing = customerRec({ spreadsheetId: 'drive-acme' });
     setStore({ customers: [existing] });
     drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
@@ -306,12 +306,48 @@ describe('Drive site-configs', () => {
     await user.click(await screen.findByRole('button', { name: /reload from drive/i }));
 
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText(/replaces this customer/i)).toBeTruthy();
+    expect(within(dialog).getByText(/recommended/i)).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: /^merge with sheet$/i })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: /^reload from drive$/i })).toBeTruthy();
     expect(importer.importCustomerFromDrive).not.toHaveBeenCalled();
+  });
+
+  it('defaults to merging with the sheet, keeping app-only data', async () => {
+    const existing = customerRec({ spreadsheetId: 'drive-acme' });
+    setStore({ customers: [existing] });
+    drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await waitFor(() => expect(drive.listAllConfigFilesInFolder).toHaveBeenCalled());
+    await expandCard(user, 'Acme');
+    await user.click(await screen.findByRole('button', { name: /reload from drive/i }));
+    const dialog = await screen.findByRole('dialog');
+
+    await user.click(within(dialog).getByRole('button', { name: /^merge with sheet$/i }));
+    await waitFor(() => expect(importer.importCustomerFromDrive).toHaveBeenCalledTimes(1));
+    const args = importer.importCustomerFromDrive.mock.calls[0][0];
+    expect(args.existingCustomer).toMatchObject({ id: 'row-acme' });
+    expect(args.mode).toBe('merge');
+  });
+
+  it('replaces the customer outright when Reload from Drive is chosen instead', async () => {
+    const existing = customerRec({ spreadsheetId: 'drive-acme' });
+    setStore({ customers: [existing] });
+    drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await waitFor(() => expect(drive.listAllConfigFilesInFolder).toHaveBeenCalled());
+    await expandCard(user, 'Acme');
+    await user.click(await screen.findByRole('button', { name: /reload from drive/i }));
+    const dialog = await screen.findByRole('dialog');
 
     await user.click(within(dialog).getByRole('button', { name: /^reload from drive$/i }));
     await waitFor(() => expect(importer.importCustomerFromDrive).toHaveBeenCalledTimes(1));
-    expect(importer.importCustomerFromDrive.mock.calls[0][0].existingCustomer).toMatchObject({ id: 'row-acme' });
+    const args = importer.importCustomerFromDrive.mock.calls[0][0];
+    expect(args.existingCustomer).toMatchObject({ id: 'row-acme' });
+    expect(args.mode).toBe('replace');
   });
 
   it('opens an imported customer directly without going back to Drive', async () => {

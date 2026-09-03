@@ -94,7 +94,7 @@ describe('importCustomerFromDrive — new customer', () => {
 });
 
 describe('importCustomerFromDrive — existing customer', () => {
-  it('replaces the tree of the customer matched by Drive file id, forced', async () => {
+  it('merges (the default) onto the customer matched by Drive file id, forced', async () => {
     const store = makeStore();
     const existing = { id: 'row-9', customerId: 'old-slug', friendlyName: 'Old Name', spreadsheetId: SAMPLE_FILE.id };
 
@@ -112,6 +112,66 @@ describe('importCustomerFromDrive — existing customer', () => {
     }));
     expect(store.setHydration).toHaveBeenCalledWith('row-9', 'hydrated');
     expect(store.selectCustomer).toHaveBeenCalledWith('row-9');
+    expect(result.mode).toBe('merged');
+  });
+
+  it('keeps a device the existing customer already had placed on the canvas', async () => {
+    const store = makeStore();
+    const existing = {
+      id: 'row-9',
+      customerId: 'acme',
+      friendlyName: 'Acme Parking',
+      spreadsheetId: SAMPLE_FILE.id,
+      sites: [{
+        id: 'site-1',
+        name: 'North Garage',
+        internalName: 'North',
+        servers: [], displayGroups: [], sensorGroups: [], contacts: [], quickLinks: [], mdfIdfLocations: [],
+        levels: [{
+          id: 'level-1',
+          name: 'Level 1',
+          internalName: 'Level 1',
+          zones: [],
+          devices: [{
+            id: 'device-1', name: 'CAM1.1F', type: 'cam-fli', x: 111, y: 222, pendingPlacement: false,
+          }],
+        }],
+      }],
+    };
+
+    await importCustomerFromDrive({ file: SAMPLE_FILE, customers: [existing], store, existingCustomer: existing });
+
+    const [, customer] = repo.saveCustomerFull.mock.calls[0];
+    const device = customer.sites[0].levels[0].devices.find((d) => d.name === 'CAM1.1F');
+    expect(device.x).toBe(111);
+    expect(device.y).toBe(222);
+    expect(device.pendingPlacement).toBe(false);
+    expect(device.id).toBe('device-1');
+  });
+
+  it('replaces the tree outright when asked, no merge', async () => {
+    const store = makeStore();
+    const existing = {
+      id: 'row-9',
+      customerId: 'acme',
+      friendlyName: 'Acme Parking',
+      spreadsheetId: SAMPLE_FILE.id,
+      sites: [{
+        id: 'site-1', name: 'North Garage', internalName: 'North', levels: [{
+          id: 'level-1', name: 'Level 1', internalName: 'Level 1', zones: [],
+          devices: [{ id: 'device-1', name: 'CAM1.1F', type: 'cam-fli', x: 111, y: 222, pendingPlacement: false }],
+        }],
+      }],
+    };
+
+    const result = await importCustomerFromDrive({
+      file: SAMPLE_FILE, customers: [existing], store, existingCustomer: existing, mode: 'replace',
+    });
+
+    const [, customer] = repo.saveCustomerFull.mock.calls[0];
+    const device = customer.sites[0].levels.flatMap((l) => l.devices).find((d) => d.name === 'CAM1.1F');
+    expect(device.x).toBeUndefined();
+    expect(device.id).not.toBe('device-1');
     expect(result.mode).toBe('replaced');
   });
 
@@ -137,7 +197,7 @@ describe('importCustomerFromDrive — existing customer', () => {
     repo.saveCustomerFull.mockResolvedValueOnce({ status: 'conflict', remoteUpdatedAt: 'x' });
     await expect(importCustomerFromDrive({
       file: SAMPLE_FILE, customers: [], store, existingCustomer: { id: 'row-4', customerId: 'q' },
-    })).rejects.toThrow(/could not be replaced/);
+    })).rejects.toThrow(/could not be merged/);
     expect(store.updateCustomer).not.toHaveBeenCalled();
     expect(store.setHydration).not.toHaveBeenCalled();
   });
