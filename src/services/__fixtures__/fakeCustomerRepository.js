@@ -1,6 +1,6 @@
 /**
  * In-memory fake for CustomerRepository.js, used by store tests that used to
- * drive a fake Google Sheets HTTP backend (see the deleted fakeSheets fixture).
+ * drive a fake Google Sheets HTTP backend.
  * Mirrors loadCustomerFull/saveCustomerFull's real contract, including the
  * updated_at optimistic-concurrency conflict check.
  */

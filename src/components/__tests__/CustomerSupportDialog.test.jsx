@@ -16,7 +16,6 @@ import { render, screen, cleanup, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 
 const sync = vi.hoisted(() => ({ syncCustomerToSheet: vi.fn(async () => {}) }));
-vi.mock('../../services/ConfigSheetSyncService', () => sync);
 
 const { useAppStore } = await import('../../stores/useAppStore');
 const CustomerSupportDialog = (await import('../CustomerSupportDialog')).default;

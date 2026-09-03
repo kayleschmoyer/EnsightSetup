@@ -8,7 +8,6 @@ import CustomerSelector from './components/CustomerSelector';
 import SiteSelector from './components/SiteSelector';
 import LevelSelector from './components/LevelSelector';
 import EditorView from './components/EditorView';
-import GoogleSessionPrompt from './components/GoogleSessionPrompt';
 import WriteConfirmationDialog from './components/WriteConfirmationDialog';
 import { getSession, onAuthStateChange } from './services/GoogleAuthService';
 import { subscribeToCustomersTable } from './services/CustomerRepository';
@@ -211,7 +210,6 @@ function AppContent() {
   return (
     <AppContext.Provider value={contextValue}>
       <div className="min-h-screen bg-background text-foreground">
-        <GoogleSessionPrompt />
         <WriteConfirmationDialog />
         <AnimatePresence mode="wait">
           <MotionDiv

@@ -3,8 +3,8 @@
  * folder. Talks only to this app's own api/drive-configs/* routes (session
  * cookie, same as CustomerRepository.js), which read Drive with the server's
  * service account. No Google OAuth consent, no Drive token and no folder id in
- * the browser — that is what separates this from the legacy
- * GoogleDriveService.js flow.
+ * the browser — that is what separates this from the removed browser-OAuth
+ * Drive flow.
  */
 
 export const SPREADSHEET_MIME = 'application/vnd.google-apps.spreadsheet';

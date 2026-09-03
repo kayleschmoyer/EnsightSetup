@@ -3,7 +3,7 @@
  *
  * Supabase (Postgres) is the app's source of truth; this endpoint mirrors the
  * current state into the 13-tab xlsx-shaped spreadsheet that downstream on-prem
- * systems (EPIC, CameraHub, FLI) read, exactly like GoogleSheetsService.js's old
+ * systems (EPIC, CameraHub, FLI) read, like the removed browser-side
  * config-tab sync did — but triggered explicitly (a button), not on every save,
  * and as a full overwrite each tab rather than an upsert-preserving-hand-edits
  * merge, since there's no longer a second writer it needs to coordinate with.

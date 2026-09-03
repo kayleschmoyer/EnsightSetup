@@ -47,17 +47,7 @@ const layout = vi.hoisted(() => {
   };
 });
 
-const sync = vi.hoisted(() => ({
-  loadServersFromNetworkingTab: vi.fn(async () => []),
-  loadDisplaySchedulesFromTab: vi.fn(async () => null),
-  syncAllConfigTabsForCustomer: vi.fn(async () => ({ changedTabs: [] })),
-}));
-
 vi.mock('../../services/LayoutPersistenceService', () => layout);
-vi.mock('../../services/ConfigSheetSyncService', () => sync);
-vi.mock('../../services/GoogleDriveService', () => ({
-  downloadConfigFile: vi.fn(async () => new ArrayBuffer(8)),
-}));
 vi.mock('../../services/ExcelParserService', () => ({
   parseExcelFile: vi.fn(() => ({ sites: [] })),
 }));

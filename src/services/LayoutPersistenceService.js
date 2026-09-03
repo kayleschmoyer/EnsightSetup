@@ -1,28 +1,9 @@
 /**
- * LayoutPersistenceService - customer setup snapshots (JSON file backup/restore,
- * plus reading the legacy SetupJson sheet tab).
- *
- * Supabase (Postgres + Storage) is now the app's source of truth — see
- * CustomerRepository.js — so this module no longer writes to Google Sheets.
- * What's left: the JSON export/import used for manual backups, and the
- * SetupJson *read* path, which OpenConfigFromDriveService.js still uses to pull
- * a customer's layout out of an old Drive-linked spreadsheet during a one-time
- * real-data migration (see the "Explicitly out of scope" note in the migration
- * plan — that migration is a deliberate later step, not part of normal usage).
+ * LayoutPersistenceService - customer setup snapshots (JSON file backup/restore).
  */
 import { downloadFile, readFileAsText } from './ConfigService';
 import { countSitesDevices } from '../lib/deviceCountUtils';
 import { normalizeCustomerConfig } from '../lib/customerUtils';
-import {
-  SETUP_JSON_TAB,
-  SETUP_JSON_CHUNK_DATA_PREFIX,
-} from '../lib/configSheetSchema';
-import {
-  getSpreadsheet,
-  isMissingSheetTabError,
-  readTabValues,
-  resolveSpreadsheetId,
-} from './GoogleSheetsService';
 
 export const LAYOUT_SCHEMA_VERSION = 1;
 export const LAYOUT_APP_ID = 'garage-layout-editor';
@@ -70,15 +51,6 @@ export function serializeCustomerLayout(customer, { navigation = null } = {}) {
   return payload;
 }
 
-/** Decode a SetupJson Data cell; accepts legacy unprefixed chunks. */
-export function decodeSetupJsonChunkData(cell) {
-  const value = String(cell ?? '');
-  if (value.startsWith(SETUP_JSON_CHUNK_DATA_PREFIX)) {
-    return value.slice(SETUP_JSON_CHUNK_DATA_PREFIX.length);
-  }
-  return value;
-}
-
 /**
  * Stable non-cryptographic digest of the payload. Used to detect that a save
  * would be a no-op, and to verify a staged write landed intact. FNV-1a over
@@ -108,117 +80,6 @@ export function setupContentHash(payload) {
   if (typeof payload === 'string') return payloadHash(payload);
   const { savedAt: _savedAt, ...rest } = payload || {};
   return payloadHash(JSON.stringify(rest));
-}
-
-/** Reassemble the JSON string a set of chunk rows encodes (no validation). */
-export function setupJsonTextFromRows(rows) {
-  let startRow = 0;
-  const headerCell = String(rows?.[0]?.[0] ?? '').trim().toLowerCase();
-  if (headerCell === 'chunkindex') startRow = 1;
-  const dataRows = (rows || []).slice(startRow).filter((row) => row && row.length >= 3);
-  const sorted = [...dataRows].sort((a, b) => Number(a[0]) - Number(b[0]));
-  return sorted.map((row) => decodeSetupJsonChunkData(row[2])).join('');
-}
-
-/**
- * True when a SetupJson read failed because the tab's CONTENT is unusable,
- * rather than because the network or the session was.
- *
- * The difference decides what the user is offered. A transient failure just
- * needs retrying. Content that cannot be parsed will never parse, and since
- * editing is blocked until the layout loads, retrying forever would leave the
- * customer permanently stuck — they need a way to rebuild the tab instead.
- * Tabs written before atomic commits landed can be in exactly this state.
- */
-export function isSetupContentError(message) {
-  return /SetupJson tab (is|has)|corrupted by the spreadsheet|could not parse JSON|Unsupported setup version|Invalid setup file|Setup file is (empty|too large)/i
-    .test(String(message || ''));
-}
-
-/** Spreadsheet formula/error tokens that destroy opaque SetupJson chunk data. */
-const SPREADSHEET_ERROR_CELL_RE = /^#(ERROR!|REF!|VALUE!|NAME\?|N\/A|DIV\/0!|NUM!|NULL!|CALC!|SPILL!)$/i;
-
-export function isSpreadsheetErrorCell(value) {
-  return SPREADSHEET_ERROR_CELL_RE.test(String(value ?? '').trim());
-}
-
-/**
- * Validate SetupJson chunk rows before reassembly.
- * @param {string[][]} rows
- */
-export function validateSetupJsonChunkRows(rows) {
-  if (!rows?.length) {
-    throw new Error('SetupJson tab is empty.');
-  }
-
-  let startRow = 0;
-  const headerCell = String(rows[0]?.[0] ?? '').trim().toLowerCase();
-  if (headerCell === 'chunkindex') startRow = 1;
-
-  const dataRows = rows.slice(startRow).filter((row) => row && row.length >= 3);
-  if (!dataRows.length) {
-    throw new Error('SetupJson tab has no data rows.');
-  }
-
-  const expectedTotal = Number(dataRows[0][1]);
-  if (!Number.isFinite(expectedTotal) || expectedTotal < 1) {
-    throw new Error('SetupJson tab has an invalid ChunkTotal.');
-  }
-  if (dataRows.length !== expectedTotal) {
-    throw new Error(`SetupJson tab is incomplete (${dataRows.length} of ${expectedTotal} chunks).`);
-  }
-
-  const indices = new Set();
-  for (const row of dataRows) {
-    const index = Number(row[0]);
-    const total = Number(row[1]);
-    if (!Number.isFinite(index) || index < 0) {
-      throw new Error('SetupJson tab has an invalid ChunkIndex.');
-    }
-    if (total !== expectedTotal) {
-      throw new Error('SetupJson tab has mismatched ChunkTotal values.');
-    }
-    if (indices.has(index)) {
-      throw new Error(`SetupJson tab has duplicate chunk index ${index}.`);
-    }
-    if (isSpreadsheetErrorCell(row[2])) {
-      throw new Error(
-        `SetupJson chunk ${index} was corrupted by the spreadsheet (got "${String(row[2]).trim()}"). `
-          + 'Re-upload the floor plan background and save again so layout sync can rewrite the tab.',
-      );
-    }
-    indices.add(index);
-  }
-
-  for (let i = 0; i < expectedTotal; i += 1) {
-    if (!indices.has(i)) {
-      throw new Error(`SetupJson tab is missing chunk ${i} of ${expectedTotal}.`);
-    }
-  }
-}
-
-/**
- * Reassemble SetupJson tab rows into a validated setup snapshot.
- * @param {string[][]} rows
- * @returns {ReturnType<typeof validateLayoutPayload>|null}
- */
-export function setupJsonPayloadFromRows(rows) {
-  if (!rows?.length) return null;
-
-  let startRow = 0;
-  const headerCell = String(rows[0]?.[0] ?? '').trim().toLowerCase();
-  if (headerCell === 'chunkindex') startRow = 1;
-
-  const dataRows = rows.slice(startRow).filter((row) => row && row.length >= 3);
-  if (!dataRows.length) return null;
-
-  validateSetupJsonChunkRows(rows);
-
-  const sorted = [...dataRows].sort((a, b) => Number(a[0]) - Number(b[0]));
-  const json = sorted.map((row) => decodeSetupJsonChunkData(row[2])).join('');
-  if (!json.trim()) return null;
-
-  return parseLayoutJson(json);
 }
 
 /**
@@ -302,13 +163,6 @@ export function parseLayoutJson(text) {
   return validateLayoutPayload(data);
 }
 
-// isSetupSnapshotUnchanged() was removed deliberately. It let loadCustomerSetup
-// skip applying a snapshot whose savedAt matched the local timestamp, on the
-// assumption that memory already held that layout. With the sheet as the source
-// of truth, memory holds nothing until a hydrate runs, so the optimization
-// rendered an empty customer. The snapshot has already been fetched and parsed
-// by the time we could check — applying it costs nothing.
-
 export function layoutFilename(customer) {
   const id = String(customer?.customerId || 'customer').trim() || 'customer';
   return `${id}-setup.json`;
@@ -338,41 +192,4 @@ export async function readLayoutJsonFile(file) {
   }
   const text = await readFileAsText(file);
   return parseLayoutJson(text);
-}
-
-/**
- * Read the SetupJson tab from a linked Google Sheet.
- * @param {object} customer
- * @returns {Promise<ReturnType<typeof validateLayoutPayload>|null>}
- */
-export async function readSetupJsonFromSpreadsheet(customer) {
-  let spreadsheetId = null;
-  try {
-    spreadsheetId = await resolveSpreadsheetId(customer);
-  } catch {
-    return null;
-  }
-  if (!spreadsheetId) return null;
-
-  const meta = await getSpreadsheet(spreadsheetId);
-  const hasSetupJsonTab = (meta.sheets || []).some((s) => s.properties?.title === SETUP_JSON_TAB);
-  if (!hasSetupJsonTab) return null;
-
-  try {
-    const rows = await readTabValues(spreadsheetId, SETUP_JSON_TAB);
-    return setupJsonPayloadFromRows(rows);
-  } catch (err) {
-    if (isMissingSheetTabError(err.message)) return null;
-    throw err;
-  }
-}
-
-/**
- * Load setup from Google Sheet and return parsed snapshot (null if tab empty/missing).
- * Used only by OpenConfigFromDriveService.js's legacy-data import path — see the
- * module docstring above.
- * @param {object} customer
- */
-export async function loadCustomerSetupFromSheet(customer) {
-  return readSetupJsonFromSpreadsheet(customer);
 }
