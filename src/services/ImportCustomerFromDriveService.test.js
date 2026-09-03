@@ -10,13 +10,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildSampleWorkbookBuffer, SAMPLE_FILE } from './__fixtures__/sampleWorkbook';
 
 const drive = vi.hoisted(() => ({
-  downloadDriveConfigFile: vi.fn(),
+  downloadConfigFile: vi.fn(),
 }));
 const repo = vi.hoisted(() => ({
   createCustomer: vi.fn(),
   saveCustomerFull: vi.fn(),
 }));
-vi.mock('./DriveConfigService', () => drive);
+vi.mock('./GoogleDriveService', () => drive);
 vi.mock('./CustomerRepository', () => repo);
 
 const { importCustomerFromDrive, findCustomerForDriveFile } = await import('./ImportCustomerFromDriveService');
@@ -38,9 +38,7 @@ function makeStore() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  drive.downloadDriveConfigFile.mockResolvedValue({
-    buffer: buildSampleWorkbookBuffer(), name: SAMPLE_FILE.name, mimeType: SAMPLE_FILE.mimeType,
-  });
+  drive.downloadConfigFile.mockResolvedValue(buildSampleWorkbookBuffer());
   repo.createCustomer.mockImplementation(async (payload) => ({
     customer: { ...payload, id: 'row-1' },
     updatedAt: '2026-09-02T10:00:00.000Z',
@@ -55,7 +53,7 @@ describe('importCustomerFromDrive — new customer', () => {
 
     const result = await importCustomerFromDrive({ file: SAMPLE_FILE, customers: [], store });
 
-    expect(drive.downloadDriveConfigFile).toHaveBeenCalledWith(SAMPLE_FILE.id, { signal: null });
+    expect(drive.downloadConfigFile).toHaveBeenCalledWith(SAMPLE_FILE.id, { signal: null });
     expect(repo.createCustomer).toHaveBeenCalledTimes(1);
     const payload = repo.createCustomer.mock.calls[0][0];
     expect(payload).toMatchObject({
@@ -84,11 +82,14 @@ describe('importCustomerFromDrive — new customer', () => {
     expect(store.setHydration).toHaveBeenCalledWith('row-1', 'hydrated');
   });
 
-  it('falls back to the downloaded file name when the catalog entry has none', async () => {
+  it('uses the file exactly as the catalog gave it, with no metadata refill from the download', async () => {
+    // listAllConfigFilesInFolder always returns full file objects (id/name/mimeType/webViewLink),
+    // so downloadConfigFile (which returns only bytes) never needs to fill in the name.
     const store = makeStore();
-    await importCustomerFromDrive({ file: { id: SAMPLE_FILE.id }, customers: [], store });
+    await importCustomerFromDrive({ file: SAMPLE_FILE, customers: [], store });
     const payload = repo.createCustomer.mock.calls[0][0];
     expect(payload.sites[0].quickLinks[0].name).toBe('Acme-config');
+    expect(payload.spreadsheetUrl).toBe(SAMPLE_FILE.webViewLink);
   });
 });
 

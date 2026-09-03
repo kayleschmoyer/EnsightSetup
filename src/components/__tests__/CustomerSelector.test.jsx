@@ -4,18 +4,27 @@
  * site-config spreadsheets in the shared Drive folder, and the only screen
  * that creates, imports, renames and removes customers.
  *
- * What must hold: a Drive file that is not in the database yet is shown and
- * imports on click through ImportCustomerFromDriveService (which is what
- * writes the rows); an already imported customer is never silently replaced —
- * "Reload from Drive" asks first; create/rename/delete go through
- * CustomerRepository and the store only reflects what the server accepted.
+ * Reading Drive is a separate consent from the primary app sign-in: each
+ * browser needs its own Drive OAuth token (GoogleDriveService.isSignedIn) —
+ * everyone already has an @ensight-technologies.com Google account, so this
+ * is one more consent screen for that account, not a service account or a
+ * second login. What must hold: a Drive file that is not in the database yet
+ * is shown and imports on click through ImportCustomerFromDriveService
+ * (which is what writes the rows); an already imported customer is never
+ * silently replaced — "Reload from Drive" asks first; create/rename/delete
+ * go through CustomerRepository and the store only reflects what the server
+ * accepted.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, cleanup, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const driveConfigs = vi.hoisted(() => ({
-  listDriveConfigFiles: vi.fn(async () => []),
+const drive = vi.hoisted(() => ({
+  signInWithGoogle: vi.fn(async () => {}),
+  signOut: vi.fn(),
+  isSignedIn: vi.fn(() => true),
+  verifySharedFolderAccess: vi.fn(async () => true),
+  listAllConfigFilesInFolder: vi.fn(async () => ({ files: [] })),
 }));
 const importer = vi.hoisted(() => ({
   importCustomerFromDrive: vi.fn(),
@@ -36,7 +45,7 @@ const auth = vi.hoisted(() => ({
   signOut: vi.fn(async () => {}),
 }));
 
-vi.mock('../../services/DriveConfigService', () => driveConfigs);
+vi.mock('../../services/GoogleDriveService', () => drive);
 vi.mock('../../services/ImportCustomerFromDriveService', () => importer);
 vi.mock('../../services/CustomerRepository', () => repo);
 vi.mock('../../services/GoogleAuthService', () => auth);
@@ -109,7 +118,9 @@ async function expandCard(user, name) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  driveConfigs.listDriveConfigFiles.mockResolvedValue([]);
+  drive.isSignedIn.mockReturnValue(true);
+  drive.verifySharedFolderAccess.mockResolvedValue(true);
+  drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [] });
   importer.importCustomerFromDrive.mockResolvedValue({
     customerId: 'row-acme', mode: 'created', friendlyName: 'Acme Parking',
     summary: { sites: 1, levels: 2, zones: 1, devices: 6, servers: 2 }, warnings: [],
@@ -124,37 +135,121 @@ afterEach(cleanup);
 
 // ── DRIVE CATALOG ───────────────────────────────────────────────────────────
 describe('Drive site-configs', () => {
-  it('loads the shared folder as soon as there is a session and lists files not yet imported', async () => {
-    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+  it('loads the shared folder as soon as there is a session and a Drive token, and lists files not yet imported', async () => {
+    drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
     render(<CustomerSelector />);
 
     expect(await screen.findByRole('heading', { name: 'Acme' })).toBeTruthy();
     expect(screen.getByText(/available in drive/i)).toBeTruthy();
     expect(screen.getByText(/not imported yet/i)).toBeTruthy();
-    expect(driveConfigs.listDriveConfigFiles).toHaveBeenCalledTimes(1);
+    expect(drive.listAllConfigFilesInFolder).toHaveBeenCalledTimes(1);
   });
 
-  it('does not touch Drive while signed out', async () => {
+  it('does not touch Drive while signed out of the app', async () => {
     setStore({ session: null });
     render(<CustomerSelector />);
     await waitFor(() => expect(auth.renderSignInButton).toHaveBeenCalled());
-    expect(driveConfigs.listDriveConfigFiles).not.toHaveBeenCalled();
+    expect(drive.listAllConfigFilesInFolder).not.toHaveBeenCalled();
   });
 
-  it('shows the failure with a Retry when the folder cannot be listed', async () => {
-    driveConfigs.listDriveConfigFiles.mockRejectedValueOnce(new Error('folder not shared with the service account'));
-    driveConfigs.listDriveConfigFiles.mockResolvedValueOnce([driveFile()]);
+  it('does not auto-fetch or error until this browser has granted Drive access', async () => {
+    drive.isSignedIn.mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /sync/i })).toBeTruthy());
+    expect(drive.listAllConfigFilesInFolder).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /sync/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/sign in with google to load site configs/i);
+    expect(drive.listAllConfigFilesInFolder).not.toHaveBeenCalled();
+  });
+
+  it('shows a plain Retry for a transient failure once Drive access already exists', async () => {
+    drive.listAllConfigFilesInFolder.mockRejectedValueOnce(new Error('Google request timed out. Please try again.'));
+    drive.listAllConfigFilesInFolder.mockResolvedValueOnce({ files: [driveFile()] });
     const user = userEvent.setup();
     render(<CustomerSelector />);
 
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/folder not shared/);
+    expect(alert.textContent).toMatch(/timed out/i);
+    expect(within(alert).queryByRole('button', { name: /grant drive access/i })).toBeNull();
     await user.click(within(alert).getByRole('button', { name: /retry/i }));
     expect(await screen.findByRole('heading', { name: 'Acme' })).toBeTruthy();
   });
 
+  it('shows Grant Drive Access when the folder itself refuses this account, and recovers after granting', async () => {
+    const forbidden = Object.assign(new Error('Google Drive access was denied (403).'), { code: 'DRIVE_FORBIDDEN' });
+    drive.listAllConfigFilesInFolder.mockRejectedValueOnce(forbidden);
+    drive.listAllConfigFilesInFolder.mockResolvedValueOnce({ files: [driveFile()] });
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await screen.findByRole('alert');
+    expect(screen.queryByRole('button', { name: /^retry$/i })).toBeNull();
+    const grantButton = screen.getByRole('button', { name: /grant drive access/i });
+
+    await user.click(grantButton);
+    expect(drive.signInWithGoogle).toHaveBeenCalledWith({ prompt: 'consent' });
+    expect(drive.verifySharedFolderAccess).toHaveBeenCalled();
+    expect(await screen.findByRole('heading', { name: 'Acme' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /grant drive access/i })).toBeNull();
+  });
+
+  it('keeps showing Grant Drive Access when the folder is still not shared with this account after granting', async () => {
+    const forbidden = Object.assign(new Error('denied'), { code: 'DRIVE_FORBIDDEN' });
+    drive.listAllConfigFilesInFolder.mockRejectedValue(forbidden);
+    drive.verifySharedFolderAccess.mockResolvedValueOnce(false);
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await screen.findByRole('alert');
+    await user.click(screen.getByRole('button', { name: /grant drive access/i }));
+
+    expect(await screen.findByText(/access to the configuration folder was denied/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /grant drive access/i })).toBeTruthy();
+  });
+
+  it('re-checks Drive access before importing a not-yet-imported row', async () => {
+    // The catalog fetch itself needed a Drive token; check that a token lost since then
+    // (expiry, revoked access) is caught again at click time, not assumed from the fetch.
+    drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await screen.findByRole('heading', { name: 'Acme' });
+    drive.isSignedIn.mockReturnValue(false);
+    await user.click(screen.getByRole('heading', { name: 'Acme' }));
+
+    // handleRowActivate's isSignedIn() guard sets authError, which (like the rest of the
+    // pre-existing auth-error banner) only renders while signed out of the app entirely —
+    // the guard's real, testable effect is that nothing gets imported.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(importer.importCustomerFromDrive).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('re-checks Drive access before reloading an already-imported customer', async () => {
+    const existing = customerRec({ spreadsheetId: 'drive-acme' });
+    setStore({ customers: [existing] });
+    drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
+    const user = userEvent.setup();
+    render(<CustomerSelector />);
+
+    await waitFor(() => expect(drive.listAllConfigFilesInFolder).toHaveBeenCalled());
+    await expandCard(user, 'Acme');
+    drive.isSignedIn.mockReturnValue(false);
+    await user.click(await screen.findByRole('button', { name: /reload from drive/i }));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(importer.importCustomerFromDrive).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('imports a Drive-only row on click, shows the summary, and opens it from the dialog', async () => {
-    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+    drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
     importer.importCustomerFromDrive.mockImplementation(async ({ store }) => {
       store.addCustomer(customerRec({ friendlyName: 'Acme Parking' }));
       return {
@@ -186,7 +281,7 @@ describe('Drive site-configs', () => {
   });
 
   it('reports an import failure inside the dialog and saves nothing locally', async () => {
-    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+    drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
     importer.importCustomerFromDrive.mockRejectedValueOnce(new Error('Customer row insert failed'));
     const user = userEvent.setup();
     render(<CustomerSelector />);
@@ -202,11 +297,11 @@ describe('Drive site-configs', () => {
   it('asks before reloading an imported customer from Drive, then replaces that customer', async () => {
     const existing = customerRec({ spreadsheetId: 'drive-acme' });
     setStore({ customers: [existing] });
-    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+    drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
     const user = userEvent.setup();
     render(<CustomerSelector />);
 
-    await waitFor(() => expect(driveConfigs.listDriveConfigFiles).toHaveBeenCalled());
+    await waitFor(() => expect(drive.listAllConfigFilesInFolder).toHaveBeenCalled());
     await expandCard(user, 'Acme');
     await user.click(await screen.findByRole('button', { name: /reload from drive/i }));
 
@@ -221,7 +316,7 @@ describe('Drive site-configs', () => {
 
   it('opens an imported customer directly without going back to Drive', async () => {
     setStore({ customers: [customerRec({ spreadsheetId: 'drive-acme' })] });
-    driveConfigs.listDriveConfigFiles.mockResolvedValue([driveFile()]);
+    drive.listAllConfigFilesInFolder.mockResolvedValue({ files: [driveFile()] });
     const user = userEvent.setup();
     render(<CustomerSelector />);
 
