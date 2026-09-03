@@ -10,7 +10,9 @@ import { Card, CardContent } from './ui/card';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from './ui/dialog';
-import { listDriveConfigFiles } from '../services/DriveConfigService';
+import {
+  signInWithGoogle, signOut, isSignedIn, verifySharedFolderAccess, listAllConfigFilesInFolder,
+} from '../services/GoogleDriveService';
 import { importCustomerFromDrive } from '../services/ImportCustomerFromDriveService';
 import {
   renderSignInButton,
@@ -150,15 +152,19 @@ export default function CustomerSelector() {
   const session = useAppStore((s) => s.session);
 
   // Signed in means "has an app session" (the Google sign-in button below →
-  // api/auth-google → session cookie). That same session is all the Drive
-  // catalog needs: the server lists and downloads the shared Site-configs
-  // folder with its service account (api/drive-configs/*), so there is no
-  // separate Drive consent in the browser any more.
+  // api/auth-google → session cookie) — this is what gates Add Customer and
+  // the rest of the app. Reading the shared Site-configs Drive folder is a
+  // separate consent (isSignedIn()/handleGrantDriveAccess below): everyone
+  // already has an @ensight-technologies.com Google account, so this is one
+  // more consent screen for that same account, not a separate credential —
+  // no service account, nothing server-side reads Drive for this.
   const [authenticated, setAuthenticated] = useState(Boolean(session));
   useEffect(() => {
     setAuthenticated(Boolean(session));
   }, [session]);
+  const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [driveAccessDenied, setDriveAccessDenied] = useState(false);
 
   const [catalogRows, setCatalogRows] = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -204,17 +210,24 @@ export default function CustomerSelector() {
   }, []);
 
   const fetchCatalog = useCallback(async () => {
+    if (!isSignedIn()) {
+      setCatalogError('Sign in with Google to load site configs from Drive.');
+      return;
+    }
     const generation = ++catalogFetchGenRef.current;
     setCatalogLoading(true);
     setCatalogError('');
     try {
-      const files = await listDriveConfigFiles();
+      const { files } = await listAllConfigFilesInFolder();
       if (generation !== catalogFetchGenRef.current) return;
       setCatalogRows(mergeConfigFilesIntoCatalog(files));
       setCatalogFetched(true);
     } catch (err) {
       if (generation !== catalogFetchGenRef.current) return;
       setCatalogError(err.message || 'Failed to load site configs from Drive.');
+      if (err.code === 'DRIVE_FORBIDDEN') {
+        setDriveAccessDenied(true);
+      }
     } finally {
       if (generation === catalogFetchGenRef.current) {
         setCatalogLoading(false);
@@ -222,10 +235,12 @@ export default function CustomerSelector() {
     }
   }, []);
 
-  // The Drive folder is the source of new customers, so its catalog loads as
-  // soon as the app session exists; "Sync" re-fetches it on demand.
+  // Drive access is its own consent (handleGrantDriveAccess below), so only
+  // auto-load the catalog when this tab already holds a Drive token (e.g.
+  // restored from sessionStorage on a reload) — otherwise wait for Sync /
+  // Grant Drive Access rather than surfacing a sign-in error on first paint.
   useEffect(() => {
-    if (!authenticated || catalogFetched) return;
+    if (!authenticated || catalogFetched || !isSignedIn()) return;
     fetchCatalog();
   }, [authenticated, catalogFetched, fetchCatalog]);
 
@@ -246,9 +261,43 @@ export default function CustomerSelector() {
   }, [authenticated]);
   useEffect(() => onSignInError((err) => setAuthError(err.message || 'Sign-in failed')), []);
 
+  /**
+   * Grant this browser its own Drive OAuth token (drive + spreadsheets
+   * scope) so it can read the shared Site-configs folder. A second consent
+   * screen for the same @ensight-technologies.com account — not a separate
+   * sign-in, and independent of the primary app session above.
+   */
+  const handleGrantDriveAccess = useCallback(async () => {
+    setAuthError('');
+    setDriveAccessDenied(false);
+    setAuthLoading(true);
+    try {
+      await signInWithGoogle({ prompt: 'consent' });
+      const hasDriveAccess = await verifySharedFolderAccess();
+      if (!hasDriveAccess) {
+        setDriveAccessDenied(true);
+        setAuthError(
+          'Signed in, but Google Drive access to the configuration folder was denied. '
+          + 'Click "Grant Drive Access" below to approve Drive permissions, or ask an administrator '
+          + 'to share the folder with your account.',
+        );
+        return;
+      }
+      setDriveAccessDenied(false);
+      setAuthError('');
+      await fetchCatalog();
+    } catch (err) {
+      setAuthError(err.message || 'Sign-in failed');
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [fetchCatalog]);
+
   const handleSignOut = useCallback(() => {
+    signOut();
     signOutEnsight().catch(() => {});
     setAuthenticated(false);
+    setDriveAccessDenied(false);
     setAuthError('');
     setCatalogRows([]);
     setCatalogFetched(false);
@@ -349,17 +398,21 @@ export default function CustomerSelector() {
       return;
     }
     if (!row.catalogRow?.file) return;
-    if (!authenticated) {
-      setAuthError('Sign in to import customers from Drive.');
+    if (!isSignedIn()) {
+      setAuthError('Sign in with Google to import customers from Drive.');
       return;
     }
     // Not imported yet: read the sheet and create the customer right away.
     setConfirmOpenMode('open');
     void importFromDrive(row);
-  }, [selectCustomer, importFromDrive, authenticated]);
+  }, [selectCustomer, importFromDrive]);
 
   const handleAskReloadFromDrive = useCallback((row) => {
     if (!row?.catalogRow?.file || !row.customer) return;
+    if (!isSignedIn()) {
+      setAuthError('Sign in with Google to reload from Drive.');
+      return;
+    }
     setOpenConfigError('');
     setImportOutcome(null);
     setConfirmOpenMode('reload');
@@ -715,7 +768,7 @@ export default function CustomerSelector() {
             variant="outline"
             size="sm"
             onClick={fetchCatalog}
-            disabled={!authenticated || catalogLoading}
+            disabled={!authenticated || catalogLoading || driveAccessDenied}
             className="h-7 border-[#495057] bg-transparent px-3 text-[11px] text-white hover:bg-[#282e35]"
             title={authenticated
               ? 'Refresh the list of site-config files in the shared Drive folder'
@@ -750,7 +803,7 @@ export default function CustomerSelector() {
       <ReportIssueDialog open={showReportIssue} onOpenChange={setShowReportIssue} />
 
       <div className="flex-1 overflow-y-auto px-7 py-6">
-        {catalogError && authenticated && (
+        {catalogError && authenticated && !driveAccessDenied && (
           <div className="mb-4 max-w-4xl mx-auto flex items-start gap-3 p-4 rounded-xl border border-destructive/30 bg-destructive/5" role="alert">
             <AlertCircle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
             <div className="flex-1 text-sm">
@@ -759,6 +812,20 @@ export default function CustomerSelector() {
             </div>
             <Button variant="outline" size="sm" onClick={fetchCatalog} disabled={catalogLoading}>
               Retry
+            </Button>
+          </div>
+        )}
+
+        {driveAccessDenied && (
+          <div className="mb-4 max-w-4xl mx-auto flex items-start gap-3 p-4 rounded-xl border border-warning/30 bg-warning/10" role="alert">
+            <AlertCircle className="w-5 h-5 text-warning shrink-0 mt-0.5" />
+            <div className="flex-1 text-sm">
+              <p className="font-medium text-warning">Google Drive access required</p>
+              <p className="text-muted-foreground mt-1 text-xs">{authError}</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => handleGrantDriveAccess()} disabled={authLoading}>
+              {authLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              Grant Drive Access
             </Button>
           </div>
         )}

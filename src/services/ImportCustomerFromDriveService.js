@@ -1,18 +1,22 @@
 /**
  * Import a customer from a site-config spreadsheet in the shared Drive folder
  * and land it in the database — the replacement for OpenConfigFromDriveService
- * (which hydrated memory only and needed a per-user Drive token).
+ * (which hydrated memory only).
  *
- *   Drive file (via api/drive-configs) → parseExcelFile → buildCustomerFromWorkbook
+ *   Drive file (browser's own Drive OAuth token, GoogleDriveService)
+ *     → parseExcelFile → buildCustomerFromWorkbook
  *     → CustomerRepository.createCustomer | saveCustomerFull → store
  *
- * A first import creates the customers row (and the whole tree) in one POST; a
+ * The file is downloaded with the signed-in user's own Drive access token
+ * (granted once per browser via CustomerSelector's "Grant Drive Access") —
+ * no service account, nothing server-side reads Drive for this. A first
+ * import creates the customers row (and the whole tree) in one POST; a
  * re-import of an already imported customer replaces its tree with what the
  * sheet says now (forced, no updated_at guard — the caller has already asked
  * the user to confirm). Either way the store is hydrated from the response,
  * marked 'hydrated', and the customer is opened.
  */
-import { downloadDriveConfigFile } from './DriveConfigService';
+import { downloadConfigFile } from './GoogleDriveService';
 import { parseExcelFile } from './ExcelParserService';
 import { createCustomer, saveCustomerFull } from './CustomerRepository';
 import { buildCustomerFromWorkbook } from '../lib/importedWorkbookMapping';
@@ -63,11 +67,13 @@ export async function importCustomerFromDrive({
   }
   assertNotAborted(signal);
 
-  const downloaded = await downloadDriveConfigFile(file.id, { signal });
+  // file already carries name/mimeType from the Drive listing
+  // (listAllConfigFilesInFolder), so nothing more to fill in from the download.
+  const buffer = await downloadConfigFile(file.id, { signal });
   assertNotAborted(signal);
-  const sourceFile = { ...file, name: file.name || downloaded.name, mimeType: file.mimeType || downloaded.mimeType };
+  const sourceFile = file;
 
-  const parsed = parseExcelFile(downloaded.buffer);
+  const parsed = parseExcelFile(buffer);
   // Match on the sheet's own customer id before deciding create vs replace —
   // customers.customer_id is unique, so importing a second file that names an
   // existing id must land on that row, never on a duplicate insert.
