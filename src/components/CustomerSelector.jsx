@@ -212,7 +212,8 @@ export default function CustomerSelector() {
 
   const fetchCatalog = useCallback(async () => {
     if (!isSignedIn()) {
-      setCatalogError('Sign in with Google to load site configs from Drive.');
+      setAuthError('Grant Drive access to load site configs from Drive.');
+      setDriveAccessDenied(true);
       return;
     }
     const generation = ++catalogFetchGenRef.current;
