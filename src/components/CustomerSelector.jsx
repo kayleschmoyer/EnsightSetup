@@ -896,6 +896,20 @@ export default function CustomerSelector() {
           </Button>
         </section>
 
+        {authenticated && !catalogFetched && !catalogLoading && !catalogError && !driveAccessDenied && (
+          <div className="mb-6 max-w-4xl mx-auto flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#3a424b] bg-[#20272f] px-4 py-3">
+            <div className="text-sm">
+              <p className="font-medium text-white">Import a customer from Google Drive</p>
+              <p className="text-muted-foreground mt-0.5 text-xs">
+                Check the shared Drive folder for site-config files that haven't been imported yet.
+              </p>
+            </div>
+            <Button size="sm" onClick={fetchCatalog}>
+              <RefreshCw className="w-4 h-4" /> Import from Drive
+            </Button>
+          </div>
+        )}
+
         {authenticated && catalogLoading && !catalogFetched && (
           <div className="max-w-md mx-auto text-center py-12 text-sm text-muted-foreground flex items-center justify-center gap-2">
             <Loader2 className="w-4 h-4 animate-spin" />
