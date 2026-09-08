@@ -59,6 +59,32 @@ vi.mock('../AddCameraWizard', () => ({
   },
 }));
 
+// Background upload/cleaning is driven through canvas and S3 in real life;
+// stub just those three seams so the prompt's own wiring is what's under test.
+const bg = vi.hoisted(() => ({
+  loadFloorPlanBackground: vi.fn(async () => ({ blob: 'as-loaded', sourceType: 'image' })),
+  cleanFloorPlanBlob: vi.fn(async () => ({
+    blob: 'cleaned', removedPixels: 4200, removedRatio: 0.0123, cleaned: true,
+  })),
+  uploadFloorPlanBackground: vi.fn(async () => 'setup_app/floor-plans/stored-key'),
+}));
+
+vi.mock('../../lib/floorPlanBackground', async (importOriginal) => ({
+  ...(await importOriginal()),
+  loadFloorPlanBackground: bg.loadFloorPlanBackground,
+}));
+
+vi.mock('../../lib/floorPlanCleanup', async (importOriginal) => ({
+  ...(await importOriginal()),
+  cleanFloorPlanBlob: bg.cleanFloorPlanBlob,
+}));
+
+vi.mock('../../services/ImageUploadService', async (importOriginal) => ({
+  ...(await importOriginal()),
+  uploadFloorPlanBackground: bg.uploadFloorPlanBackground,
+  deleteStorageObject: vi.fn(async () => {}),
+}));
+
 vi.mock('../ConfigEditor', () => ({ default: () => <div data-testid="config-editor" /> }));
 vi.mock('../ReportIssueDialog', () => ({ default: (p) => (p.open ? <div data-testid="report-dialog" /> : null) }));
 vi.mock('../AppSettingsDialog', () => ({ default: (p) => (p.open ? <div data-testid="settings-dialog" /> : null) }));
@@ -429,5 +455,98 @@ describe('toolbar', () => {
     await user.click(screen.getByLabelText('Home — Customers'));
 
     await waitFor(() => expect(useAppStore.getState().currentView).toBe('customers'));
+  });
+});
+
+// ── BACKGROUND CLEANING ─────────────────────────────────────────────────────
+describe('Background cleaning prompt', () => {
+  const PLAN = new File(['plan'], 'level-1.png', { type: 'image/png' });
+
+  /** Pick the floor-plan file input and hand it a plan, as the label's click would. */
+  async function uploadPlan(user, container) {
+    const input = container.querySelector('input[type="file"]');
+    await user.upload(input, PLAN);
+    return screen.findByText('Does this need cleaning?');
+  }
+
+  /** The stored background path currently on the level. */
+  function levelBackground() {
+    return useAppStore.getState().customers[0].sites[0].levels[0].bgImage;
+  }
+
+  it('asks before storing anything, so the answer decides what gets uploaded', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<EditorView />);
+
+    await uploadPlan(user, container);
+
+    expect(bg.loadFloorPlanBackground).toHaveBeenCalledOnce();
+    // Nothing is written until the question is answered — one upload, not two.
+    expect(bg.uploadFloorPlanBackground).not.toHaveBeenCalled();
+    expect(levelBackground()).toBeNull();
+  });
+
+  it('stores the plan untouched when cleaning is declined', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<EditorView />);
+    await uploadPlan(user, container);
+
+    await user.click(screen.getByRole('button', { name: 'No, use as-is' }));
+
+    await waitFor(() => expect(bg.uploadFloorPlanBackground).toHaveBeenCalledOnce());
+    expect(bg.cleanFloorPlanBlob).not.toHaveBeenCalled();
+    expect(bg.uploadFloorPlanBackground.mock.calls[0].at(-1)).toBe('as-loaded');
+    await waitFor(() => expect(levelBackground()).toBe('setup_app/floor-plans/stored-key'));
+  });
+
+  it('stores the cleaned plan, and says how much came off, when cleaning is accepted', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<EditorView />);
+    await uploadPlan(user, container);
+
+    await user.click(screen.getByRole('button', { name: 'Yes, clean it' }));
+
+    await waitFor(() => expect(bg.cleanFloorPlanBlob).toHaveBeenCalledWith('as-loaded'));
+    // The cleaned blob is what lands in storage, not the original.
+    expect(bg.uploadFloorPlanBackground.mock.calls[0].at(-1)).toBe('cleaned');
+    await waitFor(() => expect(screen.getByText(/removed markings from 1\.2% of the plan/)).toBeTruthy());
+  });
+
+  it('says so plainly when the plan had no markings to remove', async () => {
+    bg.cleanFloorPlanBlob.mockResolvedValueOnce({
+      blob: 'as-loaded', removedPixels: 0, removedRatio: 0, cleaned: false,
+    });
+    const user = userEvent.setup();
+    const { container } = render(<EditorView />);
+    await uploadPlan(user, container);
+
+    await user.click(screen.getByRole('button', { name: 'Yes, clean it' }));
+
+    await waitFor(() => expect(screen.getByText(/No markings found to clean/)).toBeTruthy());
+    // Still stored — a no-op clean must not lose the upload.
+    expect(bg.uploadFloorPlanBackground).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the background when cleaning fails instead of dropping the upload silently', async () => {
+    bg.cleanFloorPlanBlob.mockRejectedValueOnce(new Error('Could not decode the floor plan image for cleaning.'));
+    const user = userEvent.setup();
+    const { container } = render(<EditorView />);
+    await uploadPlan(user, container);
+
+    await user.click(screen.getByRole('button', { name: 'Yes, clean it' }));
+
+    await waitFor(() => expect(screen.getByText(/Could not decode the floor plan image/)).toBeTruthy());
+    expect(bg.uploadFloorPlanBackground).not.toHaveBeenCalled();
+  });
+
+  it('dismissing the prompt is the same as declining, not a lost upload', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<EditorView />);
+    await uploadPlan(user, container);
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(bg.uploadFloorPlanBackground).toHaveBeenCalledOnce());
+    expect(bg.cleanFloorPlanBlob).not.toHaveBeenCalled();
   });
 });
