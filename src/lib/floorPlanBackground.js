@@ -131,7 +131,7 @@ async function encodeLossyBlob(source, width, height, quality) {
  * @param {number} sourceHeight
  * @returns {Promise<Blob>}
  */
-async function encodeWithinBudget(source, sourceWidth, sourceHeight) {
+export async function encodeWithinBudget(source, sourceWidth, sourceHeight) {
   const width = Math.max(1, sourceWidth || MAX_FLOOR_PLAN_RASTER_WIDTH);
   const height = Math.max(1, sourceHeight || Math.round(width * 0.75));
   const aspect = height / width;
