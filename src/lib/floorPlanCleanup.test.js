@@ -4,7 +4,9 @@ import {
   buildMarkingMask,
   cleanImageData,
   dilateMask,
+  excludeOversizedComponents,
   inpaintMasked,
+  labelConnectedComponents,
 } from './floorPlanCleanup';
 
 /** Build an RGBA image from a `[r,g,b]` per-pixel grid. */
@@ -115,6 +117,58 @@ describe('dilateMask', () => {
   it('returns the mask untouched for a zero radius', () => {
     const mask = new Uint8Array([0, 1, 0, 0]);
     expect(dilateMask(mask, 2, 2, 0)).toBe(mask);
+  });
+});
+
+describe('labelConnectedComponents', () => {
+  it('gives separate ids and sizes to disjoint blobs', () => {
+    // 5x5: a 2-pixel blob at the top-left, a 3-pixel blob at the bottom-right.
+    const mask = new Uint8Array(25);
+    mask[0] = 1;
+    mask[1] = 1;
+    mask[18] = 1;
+    mask[19] = 1;
+    mask[24] = 1;
+
+    const { labels, sizes } = labelConnectedComponents(mask, 5, 5);
+
+    expect(labels[0]).toBe(labels[1]);
+    expect(labels[18]).toBe(labels[19]);
+    expect(labels[18]).toBe(labels[24]);
+    expect(labels[0]).not.toBe(labels[18]);
+    expect(sizes.sort((a, b) => a - b)).toEqual([2, 3]);
+  });
+
+  it('does not connect pixels that only touch diagonally', () => {
+    const mask = new Uint8Array(4);
+    mask[0] = 1; // top-left
+    mask[3] = 1; // bottom-right
+
+    const { labels } = labelConnectedComponents(mask, 2, 2);
+
+    expect(labels[0]).not.toBe(labels[3]);
+  });
+});
+
+describe('excludeOversizedComponents', () => {
+  it('drops a region bigger than the cap and keeps a smaller one', () => {
+    // 5x5: a 4-pixel block (too big) and a lone pixel (fine).
+    const mask = new Uint8Array(25);
+    mask[0] = 1;
+    mask[1] = 1;
+    mask[5] = 1;
+    mask[6] = 1;
+    mask[24] = 1;
+
+    const filtered = excludeOversizedComponents(mask, 5, 5, 2);
+
+    expect(Array.from(filtered.slice(0, 2))).toEqual([0, 0]);
+    expect(filtered[24]).toBe(1);
+  });
+
+  it('returns the mask untouched when nothing exceeds the cap', () => {
+    const mask = new Uint8Array([1, 0, 0, 1]);
+    expect(excludeOversizedComponents(mask, 2, 2, 5)).toBe(mask);
   });
 });
 
@@ -245,5 +299,29 @@ describe('cleanImageData', () => {
 
     // Dilation pulls the halo into the mask even though it wasn't flagged itself.
     expect(pixelAt(image, 2, 3)).toEqual([255, 255, 255, 255]);
+  });
+
+  it('spares a large colour-coded plan region but still removes a small icon on it', () => {
+    // A 40x40 plan with a 20x20 "zone highlight" fill (the plan's own colour
+    // coding) plus a single-pixel "camera" marking well away from it, mirroring
+    // an uploaded plan that colour-codes zones itself instead of staying B/W.
+    const grid = planGrid(40, [255, 180, 140]); // stand-in: a peach zone fill
+    for (let y = 0; y < 40; y += 1) {
+      for (let x = 0; x < 40; x += 1) {
+        if (y >= 10 && y < 30 && x >= 10 && x < 30) grid[y][x] = [255, 180, 140];
+        else grid[y][x] = WHITE;
+      }
+    }
+    grid[35][35] = RED; // the actual device callout
+    const image = imageFrom(grid);
+
+    const result = cleanImageData(image);
+
+    // The zone fill (400 px, far above the default cap) survives untouched.
+    expect(pixelAt(image, 15, 15)).toEqual([255, 180, 140, 255]);
+    expect(pixelAt(image, 20, 20)).toEqual([255, 180, 140, 255]);
+    // The lone device marking still gets cleaned.
+    expect(pixelAt(image, 35, 35)).toEqual([255, 255, 255, 255]);
+    expect(result.removedPixels).toBe(1);
   });
 });

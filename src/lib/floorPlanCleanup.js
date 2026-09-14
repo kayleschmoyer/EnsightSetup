@@ -13,6 +13,14 @@
  * alone rather than guessed at. Callers get `removedPixels` back so the UI can
  * say "nothing found" instead of silently doing nothing.
  *
+ * Saturation alone isn't enough, though: plenty of real plans colour-code their
+ * own content (a zone highlight, a street-name banner, a callout circle), and
+ * that's every bit as saturated as a camera icon. A device callout is always a
+ * small, localised blob; a colour-coded region of the plan itself is usually
+ * large. So markup pixels are grouped into connected regions, and any region
+ * bigger than a device icon has any business being is left alone — see
+ * `excludeOversizedComponents`.
+ *
  * The core works on plain `{ data, width, height }` — the same shape as
  * ImageData, but without needing a canvas — so it runs (and is tested) under
  * plain node. `cleanFloorPlanBlob` is the browser-only wrapper.
@@ -45,6 +53,23 @@ export const DEFAULT_LINE_ART_LUMINANCE = 100;
 /** Safety valve — a mask that hasn't closed by now is a huge region, not an icon. */
 const MAX_INPAINT_PASSES = 64;
 
+/**
+ * Fraction of the whole image, above which a connected blob of markup pixels
+ * is treated as the plan's own colour-coding rather than a device callout.
+ * A camera cone or sign flag is a handful of pixels on any real upload; a
+ * colour-coded zone fill or a street-banner background can be a large slice
+ * of the whole plan, so 0.5% leaves generous headroom above any real icon
+ * while still catching those.
+ */
+export const DEFAULT_MAX_MARKUP_AREA_RATIO = 0.005;
+
+/**
+ * Floor under the ratio above, in raw pixels, so a small or low-resolution
+ * upload doesn't shrink the cap below what a real icon needs. A device icon
+ * comfortably fits inside an 8x8 block even on a modest scan.
+ */
+export const DEFAULT_MIN_MARKUP_AREA_PIXELS = 64;
+
 /** Rec. 601 luma — how bright a pixel reads to the eye. */
 function luminance(r, g, b) {
   return 0.299 * r + 0.587 * g + 0.114 * b;
@@ -74,6 +99,80 @@ export function buildMarkingMask(image, options = {}) {
   }
 
   return mask;
+}
+
+/**
+ * Group a mask's pixels into 4-connected regions.
+ * @param {Uint8Array} mask
+ * @param {number} width
+ * @param {number} height
+ * @returns {{ labels: Int32Array, sizes: number[] }} `labels[i]` is the
+ *   1-based region id at pixel `i` (0 = not in the mask); `sizes[id - 1]` is
+ *   that region's pixel count.
+ */
+export function labelConnectedComponents(mask, width, height) {
+  const labels = new Int32Array(mask.length);
+  const sizes = [];
+  const stack = [];
+
+  for (let start = 0; start < mask.length; start += 1) {
+    if (!mask[start] || labels[start]) continue;
+
+    const id = sizes.length + 1;
+    let size = 0;
+    labels[start] = id;
+    stack.push(start);
+
+    while (stack.length) {
+      const index = stack.pop();
+      size += 1;
+      const x = index % width;
+      const y = (index - x) / width;
+
+      if (x > 0 && mask[index - 1] && !labels[index - 1]) {
+        labels[index - 1] = id;
+        stack.push(index - 1);
+      }
+      if (x < width - 1 && mask[index + 1] && !labels[index + 1]) {
+        labels[index + 1] = id;
+        stack.push(index + 1);
+      }
+      if (y > 0 && mask[index - width] && !labels[index - width]) {
+        labels[index - width] = id;
+        stack.push(index - width);
+      }
+      if (y < height - 1 && mask[index + width] && !labels[index + width]) {
+        labels[index + width] = id;
+        stack.push(index + width);
+      }
+    }
+
+    sizes.push(size);
+  }
+
+  return { labels, sizes };
+}
+
+/**
+ * Drop any connected region bigger than `maxComponentPixels` from a mask —
+ * the plan's own colour-coding (a zone fill, a banner) rather than a device
+ * callout. Leaves the mask untouched if nothing exceeds it.
+ * @param {Uint8Array} mask
+ * @param {number} width
+ * @param {number} height
+ * @param {number} maxComponentPixels
+ * @returns {Uint8Array}
+ */
+export function excludeOversizedComponents(mask, width, height, maxComponentPixels) {
+  const { labels, sizes } = labelConnectedComponents(mask, width, height);
+  if (!sizes.some((size) => size > maxComponentPixels)) return mask;
+
+  const filtered = new Uint8Array(mask.length);
+  for (let i = 0; i < mask.length; i += 1) {
+    const id = labels[i];
+    if (id && sizes[id - 1] <= maxComponentPixels) filtered[i] = 1;
+  }
+  return filtered;
 }
 
 /**
@@ -222,15 +321,28 @@ export function inpaintMasked(data, mask, width, height) {
 /**
  * Remove coloured markup from one image, in place.
  * @param {{ data: Uint8ClampedArray | number[], width: number, height: number }} image
- * @param {{ saturationThreshold?: number, dilation?: number }} [options]
+ * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number }} [options]
  * @returns {{ removedPixels: number, totalPixels: number, removedRatio: number }}
  */
 export function cleanImageData(image, options = {}) {
-  const { dilation = DEFAULT_DILATION, lineArtLuminance = DEFAULT_LINE_ART_LUMINANCE } = options;
+  const {
+    dilation = DEFAULT_DILATION,
+    lineArtLuminance = DEFAULT_LINE_ART_LUMINANCE,
+    maxMarkupAreaRatio = DEFAULT_MAX_MARKUP_AREA_RATIO,
+  } = options;
   const { data, width, height } = image;
   const totalPixels = width * height;
 
-  const detected = buildMarkingMask(image, options);
+  const maxComponentPixels = Math.max(
+    DEFAULT_MIN_MARKUP_AREA_PIXELS,
+    Math.round(totalPixels * maxMarkupAreaRatio),
+  );
+  const detected = excludeOversizedComponents(
+    buildMarkingMask(image, options),
+    width,
+    height,
+    maxComponentPixels,
+  );
   let removedPixels = 0;
   for (let i = 0; i < detected.length; i += 1) removedPixels += detected[i];
 
@@ -284,7 +396,7 @@ function loadImageFromBlob(blob) {
  * degrade the image through a pointless re-encode.
  *
  * @param {Blob} blob
- * @param {{ saturationThreshold?: number, dilation?: number }} [options]
+ * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number }} [options]
  * @returns {Promise<{ blob: Blob, removedPixels: number, removedRatio: number, cleaned: boolean }>}
  */
 export async function cleanFloorPlanBlob(blob, options = {}) {
