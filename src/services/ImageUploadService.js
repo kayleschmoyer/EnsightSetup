@@ -3,8 +3,9 @@
  *
  * New uploads go to the `com.ensight-technologies.public` S3 bucket under the
  * setup_app/ key prefix (see ImageStorageService.js, api/storage-image-url.js).
- * The bucket is public for reads, so rendering a freshly uploaded image is a
- * plain URL build — no signing round-trip, no expiry, no refresh timer.
+ * The bucket has no public-read policy, so rendering an image means asking
+ * the server for a presigned GET URL, same as uploads/deletes — cached
+ * client-side (below) so a canvas re-render doesn't re-request one every frame.
  *
  * Reads and deletes stay dual-mode during the transition: rows written before
  * this migration still hold bucket-relative Supabase Storage paths
@@ -34,7 +35,7 @@ const SIGNED_URL_TTL_SECONDS = 3600;
 // Refresh a bit before actual expiry so a render never races an expired URL.
 const SIGNED_URL_CACHE_MARGIN_MS = 60_000;
 
-const signedUrlCache = new Map(); // legacy Supabase path -> { url, expiresAt }
+const signedUrlCache = new Map(); // path (S3 key or legacy Supabase path) -> { url, expiresAt }
 
 /**
  * Legacy Supabase Storage is only reachable from the pre-migration paths below,
@@ -107,25 +108,30 @@ export async function deleteStorageObject(bucket, path) {
 /**
  * Resolve a stored image path to a URL a browser can render.
  *
- * S3 keys resolve to the bucket's public object URL — stable, no expiry.
- * Legacy Supabase paths fall back to a short-lived signed URL, cached
- * client-side so a canvas re-render doesn't re-request one every frame.
+ * Both S3 keys and legacy Supabase paths resolve to a short-lived signed
+ * URL, cached client-side so a canvas re-render doesn't re-request one
+ * every frame.
  */
 export async function getImageUrl(bucket, path) {
   if (!path) return null;
-  if (isS3ImagePath(path)) return getSetupAppImageUrl(path);
   const cached = signedUrlCache.get(path);
   if (cached && cached.expiresAt - SIGNED_URL_CACHE_MARGIN_MS > Date.now()) {
     return cached.url;
   }
-  const { data, error } = await (await legacyStorage(bucket))
-    .createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
-  if (error) throw error;
+  let url;
+  if (isS3ImagePath(path)) {
+    url = await getSetupAppImageUrl(path);
+  } else {
+    const { data, error } = await (await legacyStorage(bucket))
+      .createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
+    if (error) throw error;
+    url = data.signedUrl;
+  }
   signedUrlCache.set(path, {
-    url: data.signedUrl,
+    url,
     expiresAt: Date.now() + SIGNED_URL_TTL_SECONDS * 1000,
   });
-  return data.signedUrl;
+  return url;
 }
 
 export const getFloorPlanImageUrl = (path) => getImageUrl(FLOOR_PLAN_BUCKET, path);

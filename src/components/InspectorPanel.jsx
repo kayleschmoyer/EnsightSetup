@@ -70,7 +70,9 @@ function DevicePhoto({ path, alt, className }) {
     let cancelled = false;
     getDevicePhotoImageUrl(path).then((resolved) => {
       if (!cancelled) setUrl(resolved);
-    }).catch(() => {});
+    }).catch((err) => {
+      if (!cancelled) console.error(`Failed to resolve device photo "${path}":`, err);
+    });
     return () => { cancelled = true; };
   }, [path]);
   if (!url) {

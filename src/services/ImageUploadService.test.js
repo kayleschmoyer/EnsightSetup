@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const storageMock = vi.hoisted(() => ({
   uploadSetupAppImage: vi.fn(),
   deleteSetupAppImage: vi.fn(),
+  getSetupAppImageUrl: vi.fn(),
 }));
 
 const supabaseStorageMock = vi.hoisted(() => ({
@@ -23,6 +24,7 @@ vi.mock('./ImageStorageService', async () => {
     ...actual,
     uploadSetupAppImage: storageMock.uploadSetupAppImage,
     deleteSetupAppImage: storageMock.deleteSetupAppImage,
+    getSetupAppImageUrl: storageMock.getSetupAppImageUrl,
   };
 });
 
@@ -46,6 +48,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   storageMock.uploadSetupAppImage.mockImplementation(
     async (subpath) => `setup_app/${subpath}.png`,
+  );
+  storageMock.getSetupAppImageUrl.mockImplementation(
+    async (key) => `https://s3.example/presigned/${key}?sig=abc`,
   );
 });
 
@@ -81,11 +86,11 @@ describe('uploads', () => {
 });
 
 describe('reads', () => {
-  it('resolves an S3 key to the public bucket URL without signing', async () => {
-    const url = await getFloorPlanImageUrl(`${FLOOR_PLAN_S3_PREFIX}7/42/lvl-1/bg-1.png`);
-    expect(url).toBe(
-      'https://s3.us-east-1.amazonaws.com/com.ensight-technologies.public/setup_app/floor-plans/7/42/lvl-1/bg-1.png',
-    );
+  it('resolves an S3 key through a presigned GET, not a public URL', async () => {
+    const key = `${FLOOR_PLAN_S3_PREFIX}7/42/lvl-1/bg-1.png`;
+    const url = await getFloorPlanImageUrl(key);
+    expect(url).toBe(`https://s3.example/presigned/${key}?sig=abc`);
+    expect(storageMock.getSetupAppImageUrl).toHaveBeenCalledWith(key);
     expect(supabaseStorageMock.createSignedUrl).not.toHaveBeenCalled();
   });
 
@@ -99,6 +104,13 @@ describe('reads', () => {
     await getImageUrl(DEVICE_PHOTO_BUCKET, 'cached/photo.png');
     await getImageUrl(DEVICE_PHOTO_BUCKET, 'cached/photo.png');
     expect(supabaseStorageMock.createSignedUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches presigned S3 GET URLs so re-renders do not re-request one', async () => {
+    const key = `${FLOOR_PLAN_S3_PREFIX}cached/bg.png`;
+    await getFloorPlanImageUrl(key);
+    await getFloorPlanImageUrl(key);
+    expect(storageMock.getSetupAppImageUrl).toHaveBeenCalledTimes(1);
   });
 
   it('returns null for an empty path', async () => {
