@@ -70,6 +70,23 @@ export const DEFAULT_MAX_MARKUP_AREA_RATIO = 0.005;
  */
 export const DEFAULT_MIN_MARKUP_AREA_PIXELS = 64;
 
+/**
+ * Pixel-count ÷ bounding-box-area, at or above which a markup component
+ * reads as a filled glyph — an icon dot, an FOV triangle, a sign rectangle —
+ * rather than a thin stroke like a CAD dimension line or a run of plan text.
+ * A solid shape fills most of its own bounding box; a line or a line of
+ * characters mostly doesn't, since the box has to stretch to cover its
+ * whole length while the ink itself stays only a pixel or two wide.
+ */
+export const DEFAULT_MIN_COMPACT_FILL_RATIO = 0.4;
+
+/**
+ * Max gap (px) between two components' bounding boxes for them to count as
+ * one device callout — a text label sitting just off an icon, or a leader
+ * line reaching up to one.
+ */
+export const DEFAULT_CLUSTER_PROXIMITY = 18;
+
 /** Rec. 601 luma — how bright a pixel reads to the eye. */
 function luminance(r, g, b) {
   return 0.299 * r + 0.587 * g + 0.114 * b;
@@ -171,6 +188,99 @@ export function excludeOversizedComponents(mask, width, height, maxComponentPixe
   for (let i = 0; i < mask.length; i += 1) {
     const id = labels[i];
     if (id && sizes[id - 1] <= maxComponentPixels) filtered[i] = 1;
+  }
+  return filtered;
+}
+
+/**
+ * Inclusive bounding box of every labelled component.
+ * @param {Int32Array} labels
+ * @param {number} componentCount
+ * @param {number} width
+ * @returns {{ minX: number, maxX: number, minY: number, maxY: number }[]}
+ *   indexed by component id − 1
+ */
+export function componentBounds(labels, componentCount, width) {
+  const bounds = Array.from({ length: componentCount }, () => (
+    { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
+  ));
+  for (let i = 0; i < labels.length; i += 1) {
+    const id = labels[i];
+    if (!id) continue;
+    const b = bounds[id - 1];
+    const x = i % width;
+    const y = (i - x) / width;
+    if (x < b.minX) b.minX = x;
+    if (x > b.maxX) b.maxX = x;
+    if (y < b.minY) b.minY = y;
+    if (y > b.maxY) b.maxY = y;
+  }
+  return bounds;
+}
+
+/** 0 if two 1D intervals overlap or touch, else the gap between them. */
+function axisGap(aMin, aMax, bMin, bMax) {
+  if (aMax < bMin) return bMin - aMax;
+  if (bMax < aMin) return aMin - bMax;
+  return 0;
+}
+
+/** Chebyshev gap between two bounding boxes — 0 if they overlap or touch. */
+function bboxGap(a, b) {
+  return Math.max(
+    axisGap(a.minX, a.maxX, b.minX, b.maxX),
+    axisGap(a.minY, a.maxY, b.minY, b.maxY),
+  );
+}
+
+/**
+ * Spare a thin, line/text-like component — a CAD dimension line, a run of
+ * plan text — unless it sits within `proximity` of a compact, icon-shaped
+ * one. A real device callout is always anchored by at least one filled
+ * glyph (the camera dot, the FOV triangle, the sign rectangle), with any
+ * leader line or label reaching out from there; a thin marking with no
+ * such neighbour is almost always the plan's own annotation instead. A
+ * lone compact icon (no label or line nearby) is never excluded here —
+ * only thin shapes need an anchor.
+ * @param {Uint8Array} mask
+ * @param {number} width
+ * @param {number} height
+ * @param {{ minFillRatio?: number, proximity?: number }} [options]
+ * @returns {Uint8Array}
+ */
+export function excludeUnanchoredThinComponents(mask, width, height, options = {}) {
+  const {
+    minFillRatio = DEFAULT_MIN_COMPACT_FILL_RATIO,
+    proximity = DEFAULT_CLUSTER_PROXIMITY,
+  } = options;
+
+  const { labels, sizes } = labelConnectedComponents(mask, width, height);
+  const componentCount = sizes.length;
+  if (!componentCount) return mask;
+
+  const bounds = componentBounds(labels, componentCount, width);
+  const isCompact = bounds.map((b, i) => {
+    const area = (b.maxX - b.minX + 1) * (b.maxY - b.minY + 1);
+    return area > 0 && sizes[i] / area >= minFillRatio;
+  });
+
+  const keep = isCompact.slice();
+  for (let i = 0; i < componentCount; i += 1) {
+    if (keep[i]) continue;
+    for (let j = 0; j < componentCount; j += 1) {
+      if (isCompact[j] && bboxGap(bounds[i], bounds[j]) <= proximity) {
+        keep[i] = true;
+        break;
+      }
+    }
+  }
+
+  if (keep.every(Boolean)) return mask;
+
+  const filtered = new Uint8Array(mask.length);
+  for (let i = 0; i < mask.length; i += 1) {
+    const id = labels[i];
+    if (id && keep[id - 1]) filtered[i] = 1;
   }
   return filtered;
 }
@@ -321,7 +431,7 @@ export function inpaintMasked(data, mask, width, height) {
 /**
  * Remove coloured markup from one image, in place.
  * @param {{ data: Uint8ClampedArray | number[], width: number, height: number }} image
- * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number }} [options]
+ * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number, minCompactFillRatio?: number, clusterProximity?: number }} [options]
  * @returns {{ removedPixels: number, totalPixels: number, removedRatio: number }}
  */
 export function cleanImageData(image, options = {}) {
@@ -329,6 +439,8 @@ export function cleanImageData(image, options = {}) {
     dilation = DEFAULT_DILATION,
     lineArtLuminance = DEFAULT_LINE_ART_LUMINANCE,
     maxMarkupAreaRatio = DEFAULT_MAX_MARKUP_AREA_RATIO,
+    minCompactFillRatio = DEFAULT_MIN_COMPACT_FILL_RATIO,
+    clusterProximity = DEFAULT_CLUSTER_PROXIMITY,
   } = options;
   const { data, width, height } = image;
   const totalPixels = width * height;
@@ -337,12 +449,19 @@ export function cleanImageData(image, options = {}) {
     DEFAULT_MIN_MARKUP_AREA_PIXELS,
     Math.round(totalPixels * maxMarkupAreaRatio),
   );
-  const detected = excludeOversizedComponents(
+  let detected = excludeOversizedComponents(
     buildMarkingMask(image, options),
     width,
     height,
     maxComponentPixels,
   );
+  // A thin marking (a CAD dimension line, a run of plan text) only survives
+  // if it's anchored to a compact icon shape nearby — see
+  // excludeUnanchoredThinComponents for why.
+  detected = excludeUnanchoredThinComponents(detected, width, height, {
+    minFillRatio: minCompactFillRatio,
+    proximity: clusterProximity,
+  });
   let removedPixels = 0;
   for (let i = 0; i < detected.length; i += 1) removedPixels += detected[i];
 
@@ -396,7 +515,7 @@ function loadImageFromBlob(blob) {
  * degrade the image through a pointless re-encode.
  *
  * @param {Blob} blob
- * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number }} [options]
+ * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number, minCompactFillRatio?: number, clusterProximity?: number }} [options]
  * @returns {Promise<{ blob: Blob, removedPixels: number, removedRatio: number, cleaned: boolean }>}
  */
 export async function cleanFloorPlanBlob(blob, options = {}) {
