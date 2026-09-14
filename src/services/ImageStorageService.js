@@ -5,7 +5,8 @@ import { guardedWrite } from './WriteGuard';
  * api/storage-image-url.js and api/_s3.js). Every key this app writes MUST
  * live under SETUP_APP_PREFIX — the bucket also serves other, unrelated apps
  * at its root. AWS credentials never reach the browser: the server only ever
- * hands back a short-lived presigned URL for a single object.
+ * hands back a short-lived presigned URL for a single object — reads
+ * included, so the bucket itself never needs a public-read policy.
  */
 
 export const SETUP_APP_PREFIX = 'setup_app/';
@@ -34,12 +35,19 @@ function assertSetupAppKey(key) {
 }
 
 async function requestPresignedUrl(method, key, contentType) {
-  const response = await fetch(PRESIGN_ENDPOINT, {
-    method,
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key, contentType }),
-  });
+  // A GET request can't carry a body, so its key goes on the query string;
+  // POST/DELETE send it as JSON.
+  const response = method === 'GET'
+    ? await fetch(`${PRESIGN_ENDPOINT}?key=${encodeURIComponent(key)}`, {
+      method,
+      credentials: 'include',
+    })
+    : await fetch(PRESIGN_ENDPOINT, {
+      method,
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, contentType }),
+    });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(data.error || `Could not get a storage URL (${response.status}).`);
@@ -98,16 +106,12 @@ export async function deleteSetupAppImage(key) {
 }
 
 /**
- * The bucket is public for reads — no signing needed, just build the URL.
- * Throws if `key` isn't under setup_app/.
- *
- * Path-style (`s3.<region>.amazonaws.com/<bucket>/<key>`), not virtual-hosted
- * style: this bucket's name contains dots, and AWS's `*.s3.<region>.amazonaws.com`
- * certificate only covers a single label, so `com.ensight-technologies.public.s3...`
- * fails TLS verification in the browser. The presigner signs path-style for the
- * same reason, so both halves of a round-trip agree.
+ * Resolve a stored key to a short-lived, single-object presigned GET URL.
+ * The bucket has no public-read policy, so every read is signed server-side
+ * (api/storage-image-url.js) just like uploads and deletes. Throws if `key`
+ * isn't under setup_app/.
  */
-export function getSetupAppImageUrl(key, { bucket = 'com.ensight-technologies.public', region = 'us-east-1' } = {}) {
+export async function getSetupAppImageUrl(key) {
   assertSetupAppKey(key);
-  return `https://s3.${region}.amazonaws.com/${bucket}/${key}`;
+  return requestPresignedUrl('GET', key);
 }

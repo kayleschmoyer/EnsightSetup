@@ -270,7 +270,9 @@ function useFloorPlanImageUrl(path) {
     let cancelled = false;
     getFloorPlanImageUrl(path).then((resolved) => {
       if (!cancelled) setUrl(resolved);
-    }).catch(() => {});
+    }).catch((err) => {
+      if (!cancelled) console.error(`Failed to resolve floor plan background "${path}":`, err);
+    });
     return () => { cancelled = true; };
   }, [path]);
   return url;

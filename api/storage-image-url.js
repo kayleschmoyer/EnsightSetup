@@ -1,20 +1,23 @@
 /**
- * Vercel serverless function — issues a presigned PUT URL for uploading an
- * image straight to the `com.ensight-technologies.public` S3 bucket under
- * setup_app/, and a presigned DELETE for removing one. The bucket is public
- * for reads, so GETs need no signing — the client builds the object URL
- * directly (see ImageStorageService.js) once the PUT succeeds.
+ * Vercel serverless function — issues presigned PUT/GET/DELETE URLs for the
+ * `com.ensight-technologies.public` S3 bucket under setup_app/. The bucket
+ * is private; every read goes through a short-lived presigned GET here too
+ * (see ImageStorageService.js), so no public bucket policy is required.
  *
  * AWS credentials never leave the server: the client only ever receives a
  * short-lived, single-object presigned URL, not the access/secret key pair.
  */
-import { PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getS3Client, getS3Bucket, assertSetupAppKey } from './_s3.js';
 import { requireEnsightSession } from './_auth.js';
 import { json, readBody } from './_http.js';
 
 const SIGNED_URL_TTL_SECONDS = 300;
+// Reads are cached client-side for this long (see ImageUploadService.js), so
+// the presigned GET needs to outlive that cache or a render can race an
+// expired URL.
+const READ_SIGNED_URL_TTL_SECONDS = 3600;
 // Raster image types only. The bucket is public for reads, so image/svg+xml is
 // deliberately excluded — a hosted SVG is script-capable in the browser.
 // Device photos are normally re-encoded to webp/jpeg/png before upload, but an
@@ -33,7 +36,7 @@ const ALLOWED_CONTENT_TYPES = new Set([
 ]);
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST' && req.method !== 'DELETE') {
+  if (req.method !== 'POST' && req.method !== 'DELETE' && req.method !== 'GET') {
     json(res, 405, { error: 'Method not allowed.' });
     return;
   }
@@ -45,17 +48,21 @@ export default async function handler(req, res) {
     return;
   }
 
-  let body;
-  try {
-    body = await readBody(req);
-  } catch (err) {
-    json(res, 400, { error: err.message || 'Invalid request.' });
-    return;
+  // GET carries the key as a query param (a GET request can't have a body);
+  // POST/DELETE carry it in a JSON body.
+  let body = {};
+  if (req.method !== 'GET') {
+    try {
+      body = await readBody(req);
+    } catch (err) {
+      json(res, 400, { error: err.message || 'Invalid request.' });
+      return;
+    }
   }
 
   let key;
   try {
-    key = assertSetupAppKey(body.key);
+    key = assertSetupAppKey(req.method === 'GET' ? req.query?.key : body.key);
   } catch (err) {
     json(res, 400, { error: err.message });
     return;
@@ -71,6 +78,16 @@ export default async function handler(req, res) {
 
   try {
     const client = getS3Client();
+
+    if (req.method === 'GET') {
+      const url = await getSignedUrl(
+        client,
+        new GetObjectCommand({ Bucket: bucket, Key: key }),
+        { expiresIn: READ_SIGNED_URL_TTL_SECONDS },
+      );
+      json(res, 200, { url, method: 'GET' });
+      return;
+    }
 
     if (req.method === 'DELETE') {
       const url = await getSignedUrl(
