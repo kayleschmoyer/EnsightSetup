@@ -287,10 +287,7 @@ async function shrinkOversizedDevicePhotos(customerId, customer) {
   for (const site of result.sites) {
     for (const level of site?.levels ?? []) {
       for (const device of level?.devices ?? []) {
-        photosByDevice.set(`${site.id}:${level.id}:${device.id}`, {
-          viewImage: device.viewImage,
-          signImages: device.signImages,
-        });
+        photosByDevice.set(`${site.id}:${level.id}:${device.id}`, device.photos);
       }
     }
   }
@@ -308,22 +305,14 @@ async function shrinkOversizedDevicePhotos(customerId, customer) {
               ...level,
               devices: (level.devices ?? []).map((device) => {
                 const photos = photosByDevice.get(`${site.id}:${level.id}:${device.id}`);
-                if (!photos) return device;
-                let changed = false;
-                const next = { ...device };
-                if (photos.viewImage != null && photos.viewImage !== device.viewImage) {
-                  next.viewImage = photos.viewImage;
-                  changed = true;
-                }
                 if (
-                  Array.isArray(photos.signImages)
-                  && photos.signImages !== device.signImages
-                  && JSON.stringify(photos.signImages) !== JSON.stringify(device.signImages || [])
+                  !Array.isArray(photos)
+                  || photos === device.photos
+                  || JSON.stringify(photos) === JSON.stringify(device.photos || [])
                 ) {
-                  next.signImages = photos.signImages;
-                  changed = true;
+                  return device;
                 }
-                return changed ? next : device;
+                return { ...device, photos };
               }),
             })),
           })),

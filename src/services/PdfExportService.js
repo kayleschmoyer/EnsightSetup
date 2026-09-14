@@ -773,19 +773,20 @@ function drawTableHeader(doc, y, columns) {
 // ─── CAMERA VIEWS PAGE ─────────────────────────────────────────────────────────
 
 async function drawCameraViews(doc, allLevels) {
+  // The first photo on a camera is its view shot.
   const camerasWithViews = allLevels.flatMap(l =>
     (l.devices || [])
-      .filter(d => d.type?.startsWith('cam-') && d.viewImage)
+      .filter(d => d.type?.startsWith('cam-') && d.photos?.[0])
       .map(d => ({ ...d, levelName: l.name }))
   );
 
   if (camerasWithViews.length === 0) return;
 
-  // viewImage is a Storage object path \u2014 resolve each to a signed URL and load
+  // A photo is a Storage object path \u2014 resolve each to a signed URL and load
   // the pixels before laying out the page, so the sync draw loop below never awaits.
   const camerasWithImages = await Promise.all(camerasWithViews.map(async (cam) => {
     try {
-      const url = await getDevicePhotoImageUrl(cam.viewImage);
+      const url = await getDevicePhotoImageUrl(cam.photos[0]);
       const img = url ? await loadImage(url) : null;
       return { ...cam, img };
     } catch {

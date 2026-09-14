@@ -27,7 +27,7 @@
  */
 import { isZoneLevel } from './zoneLevelUtils';
 
-const DEVICE_APP_FIELDS = ['x', 'y', 'rotation', 'iconSize', 'pendingPlacement', 'viewImage', 'signImages'];
+const DEVICE_APP_FIELDS = ['x', 'y', 'rotation', 'iconSize', 'pendingPlacement', 'photos'];
 const ZONE_POLYGON_APP_FIELDS = ['points', 'color', 'opacity'];
 
 function normKey(value) {

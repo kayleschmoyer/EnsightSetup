@@ -50,11 +50,8 @@ import {
 import { InspectorSection } from './ui/inspector-section';
 import { isZoneLevel } from '../lib/zoneLevelUtils';
 import PhotoPickControls from './PhotoPickControls';
-import {
-  MAX_SIGN_PHOTOS,
-  prepareDevicePhotoFromFile,
-  prepareDevicePhotosFromFiles,
-} from '../lib/photoPick';
+import { MAX_DEVICE_PHOTOS, prepareDevicePhotosFromFiles } from '../lib/photoPick';
+import { devicePhotoPaths } from '../lib/customerRowMapping';
 import {
   uploadDevicePhoto, getDevicePhotoImageUrl, deleteStorageObject, DEVICE_PHOTO_BUCKET,
 } from '../services/ImageUploadService';
@@ -185,6 +182,7 @@ export default function InspectorPanel({
   const isSign = device.type?.startsWith('sign-');
   const isSensor = device.type?.startsWith('sensor-');
   const isDualLens = isDualLensCamera(device);
+  const devicePhotos = devicePhotoPaths(device);
 
   const deviceColor = {
     'cam-fli': 'text-blue-500',
@@ -381,8 +379,7 @@ export default function InspectorPanel({
         <TabsList className="mx-3 mt-3 h-8 bg-[#202932] border border-[#3a424b] p-0.5">
           <TabsTrigger value="general" className="text-xs flex-1">General</TabsTrigger>
           {(isCamera || isSign) && <TabsTrigger value="network" className="text-xs flex-1">Network</TabsTrigger>}
-          {isCamera && <TabsTrigger value="media" className="text-xs flex-1">Media</TabsTrigger>}
-          {isSign && <TabsTrigger value="photos" className="text-xs flex-1">Photos</TabsTrigger>}
+          <TabsTrigger value="photos" className="text-xs flex-1">Photos</TabsTrigger>
           {isCamera && <TabsTrigger value="traffic" className="text-xs flex-1">Traffic</TabsTrigger>}
         </TabsList>
 
@@ -1267,126 +1264,82 @@ export default function InspectorPanel({
               </InspectorSection>
             </TabsContent>
 
-            {/* Media Tab (Camera only) */}
-            {isCamera && (
-              <TabsContent value="media" className="mt-0 space-y-3">
-                <div>
-                  <Label>Camera View Image</Label>
-                  <div className="mt-1.5 border border-dashed border-border rounded-lg p-4 text-center">
-                    {device.viewImage ? (
-                      <div className="relative">
-                        <DevicePhoto key={device.viewImage} path={device.viewImage} alt="Camera view" className="max-h-40 mx-auto rounded" />
+            {/* Photos Tab — any device, any number of photos, all tied to this one device */}
+            <TabsContent value="photos" className="mt-0 space-y-3">
+              <div>
+                <div className="flex items-center justify-between">
+                  <Label>{isCamera ? 'Camera' : isSign ? 'Sign' : 'Sensor'} Photos</Label>
+                  <span className="text-[10px] text-muted-foreground">
+                    {devicePhotos.length} photo{devicePhotos.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+                {isCamera && (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    The first photo is used as the camera view in the PDF export.
+                  </p>
+                )}
+
+                {/* Existing photos */}
+                {devicePhotos.length > 0 && (
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {devicePhotos.map((path, idx) => (
+                      <div key={path} className="relative group border border-border rounded overflow-hidden bg-muted/30">
+                        <DevicePhoto path={path} alt={`Photo ${idx + 1}`} className="w-full h-24 object-cover" />
                         <button
                           onClick={() => {
-                            const oldPath = device.viewImage;
-                            update('viewImage', null);
-                            deleteStorageObject(DEVICE_PHOTO_BUCKET, oldPath).catch(() => {});
+                            update('photos', devicePhotos.filter((_, i) => i !== idx));
+                            deleteStorageObject(DEVICE_PHOTO_BUCKET, path).catch(() => {});
                           }}
-                          className="absolute top-1 right-1 p-1 rounded bg-background/80 hover:bg-background cursor-pointer"
+                          className="absolute top-1 right-1 p-1 rounded bg-background/80 hover:bg-destructive hover:text-destructive-foreground cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Remove photo"
                         >
                           <X className="w-3 h-3" />
                         </button>
                       </div>
-                    ) : (
-                      <PhotoPickControls
-                        accept="image/*"
-                        uploadLabel="Upload photo"
-                        hint="Photos are resized automatically so shared saves stay under size limits."
-                        onFiles={async (files) => {
-                          try {
-                            const prepared = await prepareDevicePhotoFromFile(files[0]);
-                            const path = await uploadDevicePhoto(
-                              customerId, siteId, currentLevel?.id, device.id, 0, prepared.blob,
-                            );
-                            update('viewImage', path);
-                            if (prepared.compressed) {
-                              onToast?.('Camera photo resized for sharing');
-                            }
-                          } catch (err) {
-                            onToast?.(err.message || 'Could not add photo.');
-                          }
-                        }}
-                      />
-                    )}
+                    ))}
                   </div>
-                </div>
-              </TabsContent>
-            )}
+                )}
 
-            {/* Photos Tab (Signs only) - multiple images */}
-            {isSign && (
-              <TabsContent value="photos" className="mt-0 space-y-3">
-                <div>
-                  <div className="flex items-center justify-between">
-                    <Label>Sign Photos</Label>
-                    <span className="text-[10px] text-muted-foreground">
-                      {(device.signImages?.length || 0)} photo{(device.signImages?.length || 0) === 1 ? '' : 's'}
-                    </span>
-                  </div>
-
-                  {/* Existing photos */}
-                  {device.signImages?.length > 0 && (
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      {device.signImages.map((path, idx) => (
-                        <div key={idx} className="relative group border border-border rounded overflow-hidden bg-muted/30">
-                          <DevicePhoto path={path} alt={`Sign photo ${idx + 1}`} className="w-full h-24 object-cover" />
-                          <button
-                            onClick={() => {
-                              const next = (device.signImages || []).filter((_, i) => i !== idx);
-                              update('signImages', next);
-                              deleteStorageObject(DEVICE_PHOTO_BUCKET, path).catch(() => {});
-                            }}
-                            className="absolute top-1 right-1 p-1 rounded bg-background/80 hover:bg-destructive hover:text-destructive-foreground cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
-                            title="Remove photo"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Add photos — camera on phone/tablet, or upload from library */}
-                  <div className="mt-2">
-                    <PhotoPickControls
-                      multiple
-                      accept="image/*"
-                      uploadLabel="Upload photo(s)"
-                      disabled={(device.signImages?.length || 0) >= MAX_SIGN_PHOTOS}
-                      hint={`Up to ${MAX_SIGN_PHOTOS} photos. Large shots are resized automatically for sharing.`}
-                      onFiles={async (files) => {
-                        const existing = device.signImages || [];
-                        const remaining = MAX_SIGN_PHOTOS - existing.length;
-                        if (remaining <= 0) {
-                          onToast?.(`Limit is ${MAX_SIGN_PHOTOS} photos per sign.`);
-                          return;
+                {/* Add photos — camera on phone/tablet, or upload from library */}
+                <div className="mt-2">
+                  <PhotoPickControls
+                    multiple
+                    accept="image/*"
+                    uploadLabel="Upload photo(s)"
+                    disabled={devicePhotos.length >= MAX_DEVICE_PHOTOS}
+                    hint={`Up to ${MAX_DEVICE_PHOTOS} photos. Large shots are resized automatically for sharing.`}
+                    onFiles={async (files) => {
+                      const existing = devicePhotos;
+                      const remaining = MAX_DEVICE_PHOTOS - existing.length;
+                      if (remaining <= 0) {
+                        onToast?.(`Limit is ${MAX_DEVICE_PHOTOS} photos per device.`);
+                        return;
+                      }
+                      try {
+                        const prepared = await prepareDevicePhotosFromFiles(files, {
+                          maxCount: remaining,
+                        });
+                        if (!prepared.length) return;
+                        const uploaded = await Promise.all(prepared.map((p, i) => uploadDevicePhoto(
+                          customerId, siteId, currentLevel?.id, device.id, existing.length + i, p.blob,
+                        )));
+                        update('photos', [...existing, ...uploaded]);
+                        const messages = [];
+                        if (files.length > remaining) {
+                          messages.push(`Added ${prepared.length} of ${files.length} (max ${MAX_DEVICE_PHOTOS})`);
                         }
-                        try {
-                          const prepared = await prepareDevicePhotosFromFiles(files, {
-                            maxCount: remaining,
-                          });
-                          if (!prepared.length) return;
-                          const uploaded = await Promise.all(prepared.map((p, i) => uploadDevicePhoto(
-                            customerId, siteId, currentLevel?.id, device.id, existing.length + i, p.blob,
-                          )));
-                          update('signImages', [...existing, ...uploaded]);
-                          const messages = [];
-                          if (files.length > remaining) {
-                            messages.push(`Added ${prepared.length} of ${files.length} (max ${MAX_SIGN_PHOTOS})`);
-                          }
-                          if (prepared.some((p) => p.compressed)) {
-                            messages.push('Photos resized for sharing');
-                          }
-                          if (messages.length) onToast?.(messages.join(' · '));
-                        } catch (err) {
-                          onToast?.(err.message || 'Could not add photos.');
+                        if (prepared.some((p) => p.compressed)) {
+                          messages.push('Photos resized for sharing');
                         }
-                      }}
-                    />
-                  </div>
+                        if (messages.length) onToast?.(messages.join(' · '));
+                      } catch (err) {
+                        onToast?.(err.message || 'Could not add photos.');
+                      }
+                    }}
+                  />
                 </div>
-              </TabsContent>
-            )}
+              </div>
+            </TabsContent>
             {isCamera && (
               <TabsContent value="traffic" className="mt-0 flex flex-col gap-1.5">
                 <InspectorSection
