@@ -3,8 +3,10 @@ import {
   DEFAULT_SATURATION_THRESHOLD,
   buildMarkingMask,
   cleanImageData,
+  componentBounds,
   dilateMask,
   excludeOversizedComponents,
+  excludeUnanchoredThinComponents,
   inpaintMasked,
   labelConnectedComponents,
 } from './floorPlanCleanup';
@@ -172,6 +174,75 @@ describe('excludeOversizedComponents', () => {
   });
 });
 
+describe('componentBounds', () => {
+  it('finds the inclusive bounding box of each component', () => {
+    // 5x4: an L-shaped component spanning (1,1)-(3,2).
+    const mask = new Uint8Array(20);
+    mask[1 * 5 + 1] = 1; // (1,1)
+    mask[1 * 5 + 2] = 1; // (2,1)
+    mask[2 * 5 + 2] = 1; // (2,2)
+    mask[2 * 5 + 3] = 1; // (3,2)
+    const { labels, sizes } = labelConnectedComponents(mask, 5, 4);
+
+    const [bounds] = componentBounds(labels, sizes.length, 5);
+
+    expect(bounds).toEqual({ minX: 1, maxX: 3, minY: 1, maxY: 2 });
+  });
+});
+
+describe('excludeUnanchoredThinComponents', () => {
+  it('spares a thin component with no compact neighbour nearby', () => {
+    const mask = new Uint8Array(400); // 20x20, all zero — a lone thin shape
+    // A staircase from (0,0) to (10,10): 21 pixels across a 11x11 box, ratio ~0.17.
+    let x = 0;
+    let y = 0;
+    mask[y * 20 + x] = 1;
+    for (let i = 0; i < 10; i += 1) {
+      x += 1;
+      mask[y * 20 + x] = 1;
+      y += 1;
+      mask[y * 20 + x] = 1;
+    }
+
+    const filtered = excludeUnanchoredThinComponents(mask, 20, 20);
+
+    expect(filtered.some(Boolean)).toBe(false);
+  });
+
+  it('keeps a thin component anchored to a compact one nearby', () => {
+    const mask = new Uint8Array(400); // 20x20
+    // A compact 4x4 "icon" at (0,0)-(3,3)...
+    for (let y = 0; y < 4; y += 1) {
+      for (let x = 0; x < 4; x += 1) mask[y * 20 + x] = 1;
+    }
+    // ...and a thin staircase reaching away from right beside it.
+    let x = 5;
+    let y = 0;
+    mask[y * 20 + x] = 1;
+    for (let i = 0; i < 6; i += 1) {
+      x += 1;
+      mask[y * 20 + x] = 1;
+      y += 1;
+      mask[y * 20 + x] = 1;
+    }
+
+    const filtered = excludeUnanchoredThinComponents(mask, 20, 20);
+
+    // Both the icon and the line beside it survive.
+    expect(filtered[0]).toBe(1);
+    expect(filtered[5]).toBe(1);
+  });
+
+  it('never excludes a lone compact component', () => {
+    const mask = new Uint8Array(100); // 10x10, nothing else on the plan
+    for (let y = 3; y < 7; y += 1) {
+      for (let x = 3; x < 7; x += 1) mask[y * 10 + x] = 1;
+    }
+
+    expect(excludeUnanchoredThinComponents(mask, 10, 10)).toEqual(mask);
+  });
+});
+
 describe('inpaintMasked', () => {
   it('fills a masked pixel from its unmasked neighbours', () => {
     const grid = planGrid(3);
@@ -323,5 +394,48 @@ describe('cleanImageData', () => {
     // The lone device marking still gets cleaned.
     expect(pixelAt(image, 35, 35)).toEqual([255, 255, 255, 255]);
     expect(result.removedPixels).toBe(1);
+  });
+
+  it('removes a device icon and its attached leader, but leaves an isolated CAD line and a zone fill alone', () => {
+    const grid = planGrid(50);
+    // A large "zone highlight" fill — the plan's own colour coding.
+    for (let y = 10; y < 30; y += 1) {
+      for (let x = 10; x < 30; x += 1) grid[y][x] = [255, 180, 140];
+    }
+    // A compact device icon...
+    for (let y = 2; y < 6; y += 1) {
+      for (let x = 2; x < 6; x += 1) grid[y][x] = RED;
+    }
+    // ...with a thin leader line reaching away from it.
+    let x = 7;
+    let y = 2;
+    grid[y][x] = RED;
+    for (let i = 0; i < 5; i += 1) {
+      x += 1;
+      grid[y][x] = RED;
+      y += 1;
+      grid[y][x] = RED;
+    }
+    // An isolated thin CAD line, nowhere near any icon.
+    let lx = 40;
+    let ly = 40;
+    grid[ly][lx] = RED;
+    for (let i = 0; i < 4; i += 1) {
+      lx += 1;
+      grid[ly][lx] = RED;
+      ly += 1;
+      grid[ly][lx] = RED;
+    }
+    const image = imageFrom(grid);
+
+    cleanImageData(image);
+
+    // The zone fill survives.
+    expect(pixelAt(image, 15, 15)).toEqual([255, 180, 140, 255]);
+    // The icon and its attached leader are gone.
+    expect(pixelAt(image, 3, 3)).toEqual([255, 255, 255, 255]);
+    expect(pixelAt(image, 9, 4)).toEqual([255, 255, 255, 255]);
+    // The isolated CAD line, with no icon nearby, is untouched.
+    expect(pixelAt(image, 40, 40)).toEqual([...RED, 255]);
   });
 });
