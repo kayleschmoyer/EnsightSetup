@@ -59,24 +59,16 @@ vi.mock('../AddCameraWizard', () => ({
   },
 }));
 
-// Background upload/cleaning is driven through canvas and S3 in real life;
-// stub just those three seams so the prompt's own wiring is what's under test.
+// Background upload is driven through canvas and S3 in real life; stub just
+// those two seams so the upload's own wiring is what's under test.
 const bg = vi.hoisted(() => ({
   loadFloorPlanBackground: vi.fn(async () => ({ blob: 'as-loaded', sourceType: 'image' })),
-  cleanFloorPlanBlob: vi.fn(async () => ({
-    blob: 'cleaned', removedPixels: 4200, removedRatio: 0.0123, cleaned: true,
-  })),
   uploadFloorPlanBackground: vi.fn(async () => 'setup_app/floor-plans/stored-key'),
 }));
 
 vi.mock('../../lib/floorPlanBackground', async (importOriginal) => ({
   ...(await importOriginal()),
   loadFloorPlanBackground: bg.loadFloorPlanBackground,
-}));
-
-vi.mock('../../lib/floorPlanCleanup', async (importOriginal) => ({
-  ...(await importOriginal()),
-  cleanFloorPlanBlob: bg.cleanFloorPlanBlob,
 }));
 
 vi.mock('../../services/ImageUploadService', async (importOriginal) => ({
@@ -458,95 +450,38 @@ describe('toolbar', () => {
   });
 });
 
-// ── BACKGROUND CLEANING ─────────────────────────────────────────────────────
-describe('Background cleaning prompt', () => {
+// ── BACKGROUND UPLOAD ───────────────────────────────────────────────────────
+describe('Background upload', () => {
   const PLAN = new File(['plan'], 'level-1.png', { type: 'image/png' });
-
-  /** Pick the floor-plan file input and hand it a plan, as the label's click would. */
-  async function uploadPlan(user, container) {
-    const input = container.querySelector('input[type="file"]');
-    await user.upload(input, PLAN);
-    return screen.findByText('Does this need cleaning?');
-  }
 
   /** The stored background path currently on the level. */
   function levelBackground() {
     return useAppStore.getState().customers[0].sites[0].levels[0].bgImage;
   }
 
-  it('asks before storing anything, so the answer decides what gets uploaded', async () => {
+  it('stores the plan exactly as uploaded, with no prompt in between', async () => {
     const user = userEvent.setup();
     const { container } = render(<EditorView />);
 
-    await uploadPlan(user, container);
-
-    expect(bg.loadFloorPlanBackground).toHaveBeenCalledOnce();
-    // Nothing is written until the question is answered — one upload, not two.
-    expect(bg.uploadFloorPlanBackground).not.toHaveBeenCalled();
-    expect(levelBackground()).toBeNull();
-  });
-
-  it('stores the plan untouched when cleaning is declined', async () => {
-    const user = userEvent.setup();
-    const { container } = render(<EditorView />);
-    await uploadPlan(user, container);
-
-    await user.click(screen.getByRole('button', { name: 'No, use as-is' }));
+    await user.upload(container.querySelector('input[type="file"]'), PLAN);
 
     await waitFor(() => expect(bg.uploadFloorPlanBackground).toHaveBeenCalledOnce());
-    expect(bg.cleanFloorPlanBlob).not.toHaveBeenCalled();
+    expect(bg.loadFloorPlanBackground).toHaveBeenCalledOnce();
     expect(bg.uploadFloorPlanBackground.mock.calls[0].at(-1)).toBe('as-loaded');
     await waitFor(() => expect(levelBackground()).toBe('setup_app/floor-plans/stored-key'));
+    expect(screen.queryByText('Does this need cleaning?')).toBeNull();
+    await waitFor(() => expect(screen.getByText('Background image updated')).toBeTruthy());
   });
 
-  it('stores the cleaned plan, and says how much came off, when cleaning is accepted', async () => {
+  it('surfaces a load failure instead of storing nothing silently', async () => {
+    bg.loadFloorPlanBackground.mockRejectedValueOnce(new Error('Could not decode the floor plan image.'));
     const user = userEvent.setup();
     const { container } = render(<EditorView />);
-    await uploadPlan(user, container);
 
-    await user.click(screen.getByRole('button', { name: 'Yes, clean it' }));
-
-    await waitFor(() => expect(bg.cleanFloorPlanBlob).toHaveBeenCalledWith('as-loaded'));
-    // The cleaned blob is what lands in storage, not the original.
-    expect(bg.uploadFloorPlanBackground.mock.calls[0].at(-1)).toBe('cleaned');
-    await waitFor(() => expect(screen.getByText(/removed markings from 1\.2% of the plan/)).toBeTruthy());
-  });
-
-  it('says so plainly when the plan had no markings to remove', async () => {
-    bg.cleanFloorPlanBlob.mockResolvedValueOnce({
-      blob: 'as-loaded', removedPixels: 0, removedRatio: 0, cleaned: false,
-    });
-    const user = userEvent.setup();
-    const { container } = render(<EditorView />);
-    await uploadPlan(user, container);
-
-    await user.click(screen.getByRole('button', { name: 'Yes, clean it' }));
-
-    await waitFor(() => expect(screen.getByText(/No markings found to clean/)).toBeTruthy());
-    // Still stored — a no-op clean must not lose the upload.
-    expect(bg.uploadFloorPlanBackground).toHaveBeenCalledOnce();
-  });
-
-  it('keeps the background when cleaning fails instead of dropping the upload silently', async () => {
-    bg.cleanFloorPlanBlob.mockRejectedValueOnce(new Error('Could not decode the floor plan image for cleaning.'));
-    const user = userEvent.setup();
-    const { container } = render(<EditorView />);
-    await uploadPlan(user, container);
-
-    await user.click(screen.getByRole('button', { name: 'Yes, clean it' }));
+    await user.upload(container.querySelector('input[type="file"]'), PLAN);
 
     await waitFor(() => expect(screen.getByText(/Could not decode the floor plan image/)).toBeTruthy());
     expect(bg.uploadFloorPlanBackground).not.toHaveBeenCalled();
-  });
-
-  it('dismissing the prompt is the same as declining, not a lost upload', async () => {
-    const user = userEvent.setup();
-    const { container } = render(<EditorView />);
-    await uploadPlan(user, container);
-
-    await user.keyboard('{Escape}');
-
-    await waitFor(() => expect(bg.uploadFloorPlanBackground).toHaveBeenCalledOnce());
-    expect(bg.cleanFloorPlanBlob).not.toHaveBeenCalled();
+    expect(levelBackground()).toBeNull();
   });
 });
