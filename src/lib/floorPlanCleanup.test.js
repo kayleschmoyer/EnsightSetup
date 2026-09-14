@@ -6,7 +6,8 @@ import {
   componentBounds,
   dilateMask,
   excludeOversizedComponents,
-  excludeUnanchoredThinComponents,
+  excludeUnanchoredComponents,
+  fillEnclosedRegions,
   inpaintMasked,
   labelConnectedComponents,
 } from './floorPlanCleanup';
@@ -47,6 +48,15 @@ function planGrid(size, fill = [255, 255, 255]) {
 const WHITE = [255, 255, 255];
 const BLACK = [0, 0, 0];
 const RED = [220, 30, 30];
+/** A pastel plan tint — a street-name banner, a zone fill. Chroma 36. */
+const PALE_BLUE = [207, 226, 243];
+
+/** Paint a solid `size`×`size` block — the stand-in for a device glyph. */
+function paintBlock(grid, x0, y0, size, color) {
+  for (let y = y0; y < y0 + size; y += 1) {
+    for (let x = x0; x < x0 + size; x += 1) grid[y][x] = color;
+  }
+}
 
 describe('buildMarkingMask', () => {
   it('flags saturated pixels and leaves greyscale line art alone', () => {
@@ -78,6 +88,21 @@ describe('buildMarkingMask', () => {
     const image = imageFrom(grid);
 
     expect(buildMarkingMask(image)[0]).toBe(0);
+  });
+
+  it('leaves a pastel plan tint alone but flags vivid markup', () => {
+    const grid = planGrid(2);
+    grid[0][0] = PALE_BLUE;          // a street-name banner fill
+    grid[0][1] = [255, 180, 140];    // a peach zone highlight, chroma 115
+    grid[1][0] = [34, 197, 94];      // an FOV wedge green, chroma 163
+    grid[1][1] = [59, 130, 246];     // a sign-rectangle blue, chroma 187
+    const image = imageFrom(grid);
+
+    const mask = buildMarkingMask(image);
+
+    expect(mask[0]).toBe(0);
+    expect(mask[2]).toBe(1);
+    expect(mask[3]).toBe(1);
   });
 
   it('honours a custom threshold', () => {
@@ -190,7 +215,7 @@ describe('componentBounds', () => {
   });
 });
 
-describe('excludeUnanchoredThinComponents', () => {
+describe('excludeUnanchoredComponents', () => {
   it('spares a thin component with no compact neighbour nearby', () => {
     const mask = new Uint8Array(400); // 20x20, all zero — a lone thin shape
     // A staircase from (0,0) to (10,10): 21 pixels across a 11x11 box, ratio ~0.17.
@@ -204,7 +229,7 @@ describe('excludeUnanchoredThinComponents', () => {
       mask[y * 20 + x] = 1;
     }
 
-    const filtered = excludeUnanchoredThinComponents(mask, 20, 20);
+    const filtered = excludeUnanchoredComponents(mask, 20, 20);
 
     expect(filtered.some(Boolean)).toBe(false);
   });
@@ -226,7 +251,7 @@ describe('excludeUnanchoredThinComponents', () => {
       mask[y * 20 + x] = 1;
     }
 
-    const filtered = excludeUnanchoredThinComponents(mask, 20, 20);
+    const filtered = excludeUnanchoredComponents(mask, 20, 20);
 
     // Both the icon and the line beside it survive.
     expect(filtered[0]).toBe(1);
@@ -239,7 +264,73 @@ describe('excludeUnanchoredThinComponents', () => {
       for (let x = 3; x < 7; x += 1) mask[y * 10 + x] = 1;
     }
 
-    expect(excludeUnanchoredThinComponents(mask, 10, 10)).toEqual(mask);
+    expect(excludeUnanchoredComponents(mask, 10, 10)).toEqual(mask);
+  });
+
+  it('does not let a compact speck below the anchor size anchor itself', () => {
+    // A 2x2 "arrowhead" with a thin "dimension line" beside it, nothing else.
+    const mask = new Uint8Array(400); // 20x20
+    mask[0] = 1;
+    mask[1] = 1;
+    mask[20] = 1;
+    mask[21] = 1;
+    for (let x = 4; x < 16; x += 1) mask[10 * 20 + x] = 1;
+
+    const filtered = excludeUnanchoredComponents(mask, 20, 20, { minAnchorPixels: 16 });
+
+    expect(filtered.some(Boolean)).toBe(false);
+  });
+
+  it('keeps a small speck that sits beside a real anchor', () => {
+    const mask = new Uint8Array(400); // 20x20
+    // A 4x4 icon...
+    for (let y = 0; y < 4; y += 1) {
+      for (let x = 0; x < 4; x += 1) mask[y * 20 + x] = 1;
+    }
+    // ...and a single-pixel "label digit" two pixels off it.
+    mask[6] = 1;
+
+    const filtered = excludeUnanchoredComponents(mask, 20, 20, { minAnchorPixels: 16 });
+
+    expect(filtered[6]).toBe(1);
+  });
+});
+
+describe('fillEnclosedRegions', () => {
+  it('adds what a component fully surrounds', () => {
+    // 6x6: a ring of masked pixels around a 2x2 hollow.
+    const mask = new Uint8Array(36);
+    for (let y = 1; y <= 4; y += 1) {
+      for (let x = 1; x <= 4; x += 1) {
+        if (y === 1 || y === 4 || x === 1 || x === 4) mask[y * 6 + x] = 1;
+      }
+    }
+
+    const filled = fillEnclosedRegions(mask, 6, 6, 100);
+
+    expect(filled[2 * 6 + 2]).toBe(1);
+    expect(filled[3 * 6 + 3]).toBe(1);
+    // Outside the ring is untouched.
+    expect(filled[0]).toBe(0);
+  });
+
+  it('leaves an enclosed region alone when it is bigger than the cap', () => {
+    const mask = new Uint8Array(36);
+    for (let y = 1; y <= 4; y += 1) {
+      for (let x = 1; x <= 4; x += 1) {
+        if (y === 1 || y === 4 || x === 1 || x === 4) mask[y * 6 + x] = 1;
+      }
+    }
+
+    // The hollow is 4 pixels; a cap of 3 means "that's a ring around the plan".
+    expect(fillEnclosedRegions(mask, 6, 6, 3)).toBe(mask);
+  });
+
+  it('returns the mask untouched for a solid shape', () => {
+    const mask = new Uint8Array(16);
+    for (const i of [5, 6, 9, 10]) mask[i] = 1;
+
+    expect(fillEnclosedRegions(mask, 4, 4, 100)).toBe(mask);
   });
 });
 
@@ -302,25 +393,36 @@ describe('cleanImageData', () => {
     // A wall down the left edge, further than the dilated mask can reach.
     for (let y = 0; y < 13; y += 1) grid[y][0] = BLACK;
     // A camera icon in open floor space.
+    paintBlock(grid, 5, 5, 4, RED);
+    const image = imageFrom(grid);
+
+    const result = cleanImageData(image);
+
+    expect(result.removedPixels).toBe(16);
+    expect(result.totalPixels).toBe(169);
+    expect(result.removedRatio).toBeCloseTo(16 / 169);
+    expect(pixelAt(image, 5, 5)).toEqual([255, 255, 255, 255]);
+    expect(pixelAt(image, 8, 8)).toEqual([255, 255, 255, 255]);
+    expect(pixelAt(image, 0, 0)).toEqual([0, 0, 0, 255]);
+    expect(pixelAt(image, 0, 12)).toEqual([0, 0, 0, 255]);
+  });
+
+  it('leaves a lone vivid speck alone — a dimension tick, not a device', () => {
+    const grid = planGrid(13);
     grid[6][6] = RED;
     grid[6][7] = RED;
     const image = imageFrom(grid);
 
     const result = cleanImageData(image);
 
-    expect(result.removedPixels).toBe(2);
-    expect(result.totalPixels).toBe(169);
-    expect(result.removedRatio).toBeCloseTo(2 / 169);
-    expect(pixelAt(image, 6, 6)).toEqual([255, 255, 255, 255]);
-    expect(pixelAt(image, 7, 6)).toEqual([255, 255, 255, 255]);
-    expect(pixelAt(image, 0, 0)).toEqual([0, 0, 0, 255]);
-    expect(pixelAt(image, 0, 12)).toEqual([0, 0, 0, 255]);
+    expect(result.removedPixels).toBe(0);
+    expect(pixelAt(image, 6, 6)).toEqual([...RED, 255]);
   });
 
   it('blends from adjoining line art when a marking sits against a wall', () => {
     const grid = planGrid(9);
     for (let y = 0; y < 9; y += 1) grid[y][0] = BLACK;
-    grid[4][1] = RED; // pressed right up against the wall
+    paintBlock(grid, 1, 3, 4, RED); // pressed right up against the wall
     const image = imageFrom(grid);
 
     cleanImageData(image);
@@ -349,7 +451,7 @@ describe('cleanImageData', () => {
   it('keeps a wall intact when dilation grows the mask into it', () => {
     const grid = planGrid(9);
     for (let y = 0; y < 9; y += 1) grid[y][0] = BLACK;
-    grid[4][1] = RED; // adjacent to the wall, so dilation reaches across it
+    paintBlock(grid, 1, 3, 4, RED); // adjacent to the wall, so dilation reaches across it
     const image = imageFrom(grid);
 
     cleanImageData(image);
@@ -361,15 +463,42 @@ describe('cleanImageData', () => {
   });
 
   it('clears the anti-aliased halo around a marking via dilation', () => {
-    const grid = planGrid(7);
-    grid[3][3] = RED;
-    grid[3][2] = [255, 200, 200]; // pale edge blend, below the chroma threshold
+    const grid = planGrid(9);
+    paintBlock(grid, 3, 3, 4, RED);
+    grid[4][2] = [255, 200, 200]; // pale edge blend, below the chroma threshold
     const image = imageFrom(grid);
 
     cleanImageData(image);
 
     // Dilation pulls the halo into the mask even though it wasn't flagged itself.
-    expect(pixelAt(image, 2, 3)).toEqual([255, 255, 255, 255]);
+    expect(pixelAt(image, 2, 4)).toEqual([255, 255, 255, 255]);
+  });
+
+  it('never touches a pastel banner or zone fill, even a small one', () => {
+    const grid = planGrid(20);
+    paintBlock(grid, 2, 2, 6, PALE_BLUE); // a street-name banner, well under the size cap
+    grid[4][4] = BLACK;                    // its text
+    const image = imageFrom(grid);
+
+    const result = cleanImageData(image);
+
+    expect(result.removedPixels).toBe(0);
+    expect(pixelAt(image, 2, 2)).toEqual([...PALE_BLUE, 255]);
+    expect(pixelAt(image, 4, 4)).toEqual([0, 0, 0, 255]);
+  });
+
+  it('takes the black text inside a coloured label box out with the box', () => {
+    const grid = planGrid(12);
+    paintBlock(grid, 2, 2, 6, [245, 158, 11]); // an orange label box
+    grid[4][4] = BLACK;                         // the "2" printed in it
+    grid[4][5] = BLACK;
+    const image = imageFrom(grid);
+
+    cleanImageData(image);
+
+    // The digit is gone with the box, not left behind and smeared into the fill.
+    expect(pixelAt(image, 4, 4)).toEqual([255, 255, 255, 255]);
+    expect(pixelAt(image, 2, 2)).toEqual([255, 255, 255, 255]);
   });
 
   it('spares a large colour-coded plan region but still removes a small icon on it', () => {
@@ -383,7 +512,7 @@ describe('cleanImageData', () => {
         else grid[y][x] = WHITE;
       }
     }
-    grid[35][35] = RED; // the actual device callout
+    paintBlock(grid, 33, 33, 4, RED); // the actual device callout
     const image = imageFrom(grid);
 
     const result = cleanImageData(image);
@@ -393,7 +522,7 @@ describe('cleanImageData', () => {
     expect(pixelAt(image, 20, 20)).toEqual([255, 180, 140, 255]);
     // The lone device marking still gets cleaned.
     expect(pixelAt(image, 35, 35)).toEqual([255, 255, 255, 255]);
-    expect(result.removedPixels).toBe(1);
+    expect(result.removedPixels).toBe(16);
   });
 
   it('removes a device icon and its attached leader, but leaves an isolated CAD line and a zone fill alone', () => {

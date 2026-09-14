@@ -13,13 +13,25 @@
  * alone rather than guessed at. Callers get `removedPixels` back so the UI can
  * say "nothing found" instead of silently doing nothing.
  *
- * Saturation alone isn't enough, though: plenty of real plans colour-code their
- * own content (a zone highlight, a street-name banner, a callout circle), and
- * that's every bit as saturated as a camera icon. A device callout is always a
- * small, localised blob; a colour-coded region of the plan itself is usually
- * large. So markup pixels are grouped into connected regions, and any region
- * bigger than a device icon has any business being is left alone — see
- * `excludeOversizedComponents`.
+ * Saturation alone isn't enough, though: real plans colour-code their own
+ * content too, and each kind of it is told apart from device markup by a
+ * different signal:
+ *
+ * - Tinted fills (a zone highlight, a street-name banner) are *pale* — pastel
+ *   by design so text stays readable over them — where device markup is
+ *   vivid. The chroma threshold sits above pastel and below vivid.
+ * - A big vivid region is a colour-coded area of the plan, never an icon —
+ *   `excludeOversizedComponents`.
+ * - Thin vivid strokes (dimension lines, callout text, ticks, arrowheads)
+ *   look just like a leader line or a device label. What separates them is
+ *   whether they're attached to something: a device callout is always
+ *   anchored by a substantial filled glyph (the FOV triangle, the sign
+ *   rectangle, the camera body), with its label and leader right beside it.
+ *   A thin stroke or small speck with no such anchor nearby is the plan's
+ *   own annotation — `excludeUnanchoredComponents`.
+ * - A label box removes with its text: whatever is fully enclosed by a
+ *   removed shape goes with it — `fillEnclosedRegions`. Otherwise black text
+ *   inside a coloured box survives and bleeds into the inpainted fill.
  *
  * The core works on plain `{ data, width, height }` — the same shape as
  * ImageData, but without needing a canvas — so it runs (and is tested) under
@@ -29,11 +41,15 @@ import { encodeWithinBudget } from './floorPlanBackground';
 
 /**
  * Chroma (max channel − min channel, 0–255) at which a pixel counts as markup
- * rather than line art. Greys have a chroma near 0; scanned/JPEG plans carry a
- * few points of colour noise, and 40 clears that without eating genuinely pale
- * markup like a light-blue highlight.
+ * rather than plan. Greys sit near 0. The plan's own tinted fills — a pale
+ * blue street-name banner, a peach zone highlight — are pastel and land
+ * around 35–60, so the bar has to clear those; device markup (a green FOV
+ * wedge, a blue sign rectangle, an orange label, a blue leader line) is
+ * vivid and lands well above 100. 70 splits the two with margin on both
+ * sides. Anti-aliased edges of vivid shapes fall below it and are picked up
+ * by dilation instead.
  */
-export const DEFAULT_SATURATION_THRESHOLD = 40;
+export const DEFAULT_SATURATION_THRESHOLD = 70;
 
 /**
  * Pixels of mask growth before inpainting. Anti-aliased icon edges blend markup
@@ -83,9 +99,24 @@ export const DEFAULT_MIN_COMPACT_FILL_RATIO = 0.4;
 /**
  * Max gap (px) between two components' bounding boxes for them to count as
  * one device callout — a text label sitting just off an icon, or a leader
- * line reaching up to one.
+ * line reaching up to one. Scaled up on large images (see the ratio below)
+ * so a high-resolution scan doesn't split a label from its icon.
  */
 export const DEFAULT_CLUSTER_PROXIMITY = 18;
+
+/** Proximity as a fraction of the image's shorter side; the larger of the two wins. */
+export const DEFAULT_CLUSTER_PROXIMITY_RATIO = 0.015;
+
+/**
+ * Pixels a compact component needs before it counts as an *anchor* — a
+ * device glyph that pulls nearby thin strokes and specks into the callout.
+ * A dimension arrowhead, a tick mark or a single digit is compact too, but
+ * tiny; without this floor every dimension callout on the plan would anchor
+ * itself and be cleaned off. Expressed as a fraction of the image so it
+ * tracks scan resolution, with a raw-pixel floor for small images.
+ */
+export const DEFAULT_MIN_ANCHOR_AREA_RATIO = 0.0001;
+export const DEFAULT_MIN_ANCHOR_PIXELS = 16;
 
 /** Rec. 601 luma — how bright a pixel reads to the eye. */
 function luminance(r, g, b) {
@@ -234,24 +265,27 @@ function bboxGap(a, b) {
 }
 
 /**
- * Spare a thin, line/text-like component — a CAD dimension line, a run of
- * plan text — unless it sits within `proximity` of a compact, icon-shaped
- * one. A real device callout is always anchored by at least one filled
- * glyph (the camera dot, the FOV triangle, the sign rectangle), with any
- * leader line or label reaching out from there; a thin marking with no
- * such neighbour is almost always the plan's own annotation instead. A
- * lone compact icon (no label or line nearby) is never excluded here —
- * only thin shapes need an anchor.
+ * Keep only components that belong to a device callout, judged by anchoring.
+ *
+ * An *anchor* is a substantial, filled glyph — the FOV triangle, the sign
+ * rectangle, the camera body: compact (fills most of its bounding box) and at
+ * least `minAnchorPixels` big. Anchors are always kept. Everything else — a
+ * thin stroke like a leader line or a run of text, or a small compact speck
+ * like an arrowhead, a tick or a single digit — is kept only if it sits
+ * within `proximity` of an anchor; that's the label beside the icon and the
+ * leader running up to it. With no anchor nearby it's the plan's own
+ * dimensioning and is left alone.
  * @param {Uint8Array} mask
  * @param {number} width
  * @param {number} height
- * @param {{ minFillRatio?: number, proximity?: number }} [options]
+ * @param {{ minFillRatio?: number, proximity?: number, minAnchorPixels?: number }} [options]
  * @returns {Uint8Array}
  */
-export function excludeUnanchoredThinComponents(mask, width, height, options = {}) {
+export function excludeUnanchoredComponents(mask, width, height, options = {}) {
   const {
     minFillRatio = DEFAULT_MIN_COMPACT_FILL_RATIO,
     proximity = DEFAULT_CLUSTER_PROXIMITY,
+    minAnchorPixels = DEFAULT_MIN_ANCHOR_PIXELS,
   } = options;
 
   const { labels, sizes } = labelConnectedComponents(mask, width, height);
@@ -259,16 +293,17 @@ export function excludeUnanchoredThinComponents(mask, width, height, options = {
   if (!componentCount) return mask;
 
   const bounds = componentBounds(labels, componentCount, width);
-  const isCompact = bounds.map((b, i) => {
+  const isAnchor = bounds.map((b, i) => {
+    if (sizes[i] < minAnchorPixels) return false;
     const area = (b.maxX - b.minX + 1) * (b.maxY - b.minY + 1);
     return area > 0 && sizes[i] / area >= minFillRatio;
   });
 
-  const keep = isCompact.slice();
+  const keep = isAnchor.slice();
   for (let i = 0; i < componentCount; i += 1) {
     if (keep[i]) continue;
     for (let j = 0; j < componentCount; j += 1) {
-      if (isCompact[j] && bboxGap(bounds[i], bounds[j]) <= proximity) {
+      if (isAnchor[j] && bboxGap(bounds[i], bounds[j]) <= proximity) {
         keep[i] = true;
         break;
       }
@@ -283,6 +318,86 @@ export function excludeUnanchoredThinComponents(mask, width, height, options = {
     if (id && keep[id - 1]) filtered[i] = 1;
   }
   return filtered;
+}
+
+/**
+ * Add to the mask whatever a masked component fully encloses — the black "2"
+ * inside an orange label box, the dark lens inside a camera body. Those
+ * pixels aren't saturated, so the chroma test never flags them; left in
+ * place they survive the cleaning as a stray glyph and, worse, get averaged
+ * into the inpainted fill around them as a dark smear.
+ *
+ * "Enclosed" means: inside the component's bounding box and not reachable
+ * from the box's edge without crossing the component. An enclosed region
+ * bigger than `maxRegionPixels` is left alone — that's a ring around a chunk
+ * of the plan (a callout circle), not the inside of a label.
+ * @param {Uint8Array} mask
+ * @param {number} width
+ * @param {number} height
+ * @param {number} maxRegionPixels
+ * @returns {Uint8Array}
+ */
+export function fillEnclosedRegions(mask, width, height, maxRegionPixels) {
+  const { labels, sizes } = labelConnectedComponents(mask, width, height);
+  const componentCount = sizes.length;
+  if (!componentCount) return mask;
+
+  const bounds = componentBounds(labels, componentCount, width);
+  let filled = null;
+
+  for (let c = 0; c < componentCount; c += 1) {
+    const id = c + 1;
+    const { minX, maxX, minY, maxY } = bounds[c];
+    const boxW = maxX - minX + 1;
+    const boxH = maxY - minY + 1;
+    const boxArea = boxW * boxH;
+    // A solid shape has no interior to speak of; skip the flood.
+    if (boxArea - sizes[c] === 0) continue;
+
+    // Flood outward-connected space from the box edge, staying off this
+    // component. Anything left unvisited is sealed in.
+    const visited = new Uint8Array(boxArea);
+    const stack = [];
+    const tryVisit = (bx, by) => {
+      const local = by * boxW + bx;
+      if (visited[local]) return;
+      if (labels[(minY + by) * width + (minX + bx)] === id) return;
+      visited[local] = 1;
+      stack.push(local);
+    };
+    for (let bx = 0; bx < boxW; bx += 1) {
+      tryVisit(bx, 0);
+      tryVisit(bx, boxH - 1);
+    }
+    for (let by = 0; by < boxH; by += 1) {
+      tryVisit(0, by);
+      tryVisit(boxW - 1, by);
+    }
+    while (stack.length) {
+      const local = stack.pop();
+      const bx = local % boxW;
+      const by = (local - bx) / boxW;
+      if (bx > 0) tryVisit(bx - 1, by);
+      if (bx < boxW - 1) tryVisit(bx + 1, by);
+      if (by > 0) tryVisit(bx, by - 1);
+      if (by < boxH - 1) tryVisit(bx, by + 1);
+    }
+
+    const enclosed = [];
+    for (let local = 0; local < boxArea; local += 1) {
+      if (visited[local]) continue;
+      const bx = local % boxW;
+      const by = (local - bx) / boxW;
+      const index = (minY + by) * width + (minX + bx);
+      if (labels[index] !== id) enclosed.push(index);
+    }
+    if (!enclosed.length || enclosed.length > maxRegionPixels) continue;
+
+    if (!filled) filled = Uint8Array.from(mask);
+    for (const index of enclosed) filled[index] = 1;
+  }
+
+  return filled || mask;
 }
 
 /**
@@ -431,7 +546,7 @@ export function inpaintMasked(data, mask, width, height) {
 /**
  * Remove coloured markup from one image, in place.
  * @param {{ data: Uint8ClampedArray | number[], width: number, height: number }} image
- * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number, minCompactFillRatio?: number, clusterProximity?: number }} [options]
+ * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number, minCompactFillRatio?: number, clusterProximity?: number, minAnchorAreaRatio?: number }} [options]
  * @returns {{ removedPixels: number, totalPixels: number, removedRatio: number }}
  */
 export function cleanImageData(image, options = {}) {
@@ -441,6 +556,7 @@ export function cleanImageData(image, options = {}) {
     maxMarkupAreaRatio = DEFAULT_MAX_MARKUP_AREA_RATIO,
     minCompactFillRatio = DEFAULT_MIN_COMPACT_FILL_RATIO,
     clusterProximity = DEFAULT_CLUSTER_PROXIMITY,
+    minAnchorAreaRatio = DEFAULT_MIN_ANCHOR_AREA_RATIO,
   } = options;
   const { data, width, height } = image;
   const totalPixels = width * height;
@@ -455,13 +571,18 @@ export function cleanImageData(image, options = {}) {
     height,
     maxComponentPixels,
   );
-  // A thin marking (a CAD dimension line, a run of plan text) only survives
-  // if it's anchored to a compact icon shape nearby — see
-  // excludeUnanchoredThinComponents for why.
-  detected = excludeUnanchoredThinComponents(detected, width, height, {
+  detected = excludeUnanchoredComponents(detected, width, height, {
     minFillRatio: minCompactFillRatio,
-    proximity: clusterProximity,
+    proximity: Math.max(
+      clusterProximity,
+      Math.round(Math.min(width, height) * DEFAULT_CLUSTER_PROXIMITY_RATIO),
+    ),
+    minAnchorPixels: Math.max(
+      DEFAULT_MIN_ANCHOR_PIXELS,
+      Math.round(totalPixels * minAnchorAreaRatio),
+    ),
   });
+  detected = fillEnclosedRegions(detected, width, height, maxComponentPixels);
   let removedPixels = 0;
   for (let i = 0; i < detected.length; i += 1) removedPixels += detected[i];
 
@@ -515,7 +636,7 @@ function loadImageFromBlob(blob) {
  * degrade the image through a pointless re-encode.
  *
  * @param {Blob} blob
- * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number, minCompactFillRatio?: number, clusterProximity?: number }} [options]
+ * @param {{ saturationThreshold?: number, dilation?: number, maxMarkupAreaRatio?: number, minCompactFillRatio?: number, clusterProximity?: number, minAnchorAreaRatio?: number }} [options]
  * @returns {Promise<{ blob: Blob, removedPixels: number, removedRatio: number, cleaned: boolean }>}
  */
 export async function cleanFloorPlanBlob(blob, options = {}) {
