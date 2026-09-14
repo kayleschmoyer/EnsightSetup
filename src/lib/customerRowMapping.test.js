@@ -45,7 +45,7 @@ describe('camera round-trip', () => {
         destinations: [`${OTHER_LEVEL_ID}:${ZONE_ID}`, OTHER_LEVEL_ID],
         comingFrom: 'Street',
       },
-      viewImage: 'customer/garage/level/cam-1/0-123.jpg',
+      photos: ['customer/garage/level/cam-1/0-123.jpg', 'customer/garage/level/cam-1/1-456.jpg'],
     };
 
     const split = splitLegacyDevice(device, LEVEL_ID, zoneIdSet);
@@ -65,7 +65,7 @@ describe('camera round-trip', () => {
       direction: 'in', level: LEVEL_ID, zone: ZONE_ID, multiLevel: true, comingFrom: 'Street',
     });
     expect(back.trafficFlow.destinations.sort()).toEqual([OTHER_LEVEL_ID, `${OTHER_LEVEL_ID}:${ZONE_ID}`].sort());
-    expect(back.viewImage).toBe('customer/garage/level/cam-1/0-123.jpg');
+    expect(back.photos).toEqual(['customer/garage/level/cam-1/0-123.jpg', 'customer/garage/level/cam-1/1-456.jpg']);
     expect(back.serverId).toBe('srv-1');
     expect(back.mdfIdfLocationId).toBe('mdf-1');
     expect(back.friendlyName).toBe('North Entry');
@@ -150,10 +150,37 @@ describe('sign round-trip', () => {
   });
 
   it('preserves sign photos in order', () => {
-    const device = { id: 'sign-5', type: 'sign-led', name: 'Z', signImages: ['a.jpg', 'b.jpg', 'c.jpg'] };
+    const device = { id: 'sign-5', type: 'sign-led', name: 'Z', photos: ['a.jpg', 'b.jpg', 'c.jpg'] };
     const split = splitLegacyDevice(device, LEVEL_ID, zoneIdSet);
     const back = dbDeviceToLegacy(toRow(split));
-    expect(back.signImages).toEqual(['a.jpg', 'b.jpg', 'c.jpg']);
+    expect(back.photos).toEqual(['a.jpg', 'b.jpg', 'c.jpg']);
+  });
+
+  it('still writes photos saved under the old per-family field names', () => {
+    const oldSign = { id: 'sign-6', type: 'sign-led', name: 'Old', signImages: ['s1.jpg', 's2.jpg'] };
+    const oldCam = { id: 'cam-6', type: 'cam-fli', name: 'Old', viewImage: 'v.jpg' };
+
+    expect(splitLegacyDevice(oldSign, LEVEL_ID, zoneIdSet).photos.map((p) => p.storage_path))
+      .toEqual(['s1.jpg', 's2.jpg']);
+    expect(splitLegacyDevice(oldCam, LEVEL_ID, zoneIdSet).photos.map((p) => p.storage_path))
+      .toEqual(['v.jpg']);
+  });
+});
+
+describe('device photos', () => {
+  it('round-trips several photos on a sensor, tied to that device', () => {
+    const device = { id: 'sen-9', type: 'sensor-nwave', name: 'S', photos: ['p1.jpg', 'p2.jpg'] };
+    const split = splitLegacyDevice(device, LEVEL_ID, zoneIdSet);
+
+    expect(split.photos.map((p) => [p.device_id, p.position, p.storage_path]))
+      .toEqual([['sen-9', 0, 'p1.jpg'], ['sen-9', 1, 'p2.jpg']]);
+    expect(dbDeviceToLegacy(toRow(split)).photos).toEqual(['p1.jpg', 'p2.jpg']);
+  });
+
+  it('reads an empty list, not undefined, for a device with no photos', () => {
+    const split = splitLegacyDevice({ id: 'cam-0', type: 'cam-fli', name: 'C' }, LEVEL_ID, zoneIdSet);
+    expect(split.photos).toEqual([]);
+    expect(dbDeviceToLegacy(toRow(split)).photos).toEqual([]);
   });
 });
 

@@ -464,9 +464,10 @@ CREATE TABLE sensor_units (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
--- device_photos — Storage object paths (S3 keys), not blobs. position 0 is
--- a camera's single view photo; signs can have up to 10 (app-enforced, not
--- a DB constraint here either — same as it was in Postgres).
+-- device_photos — Storage object paths (S3 keys), not blobs. Any device
+-- (camera, sign, sensor) can carry up to 10, ordered by position; a
+-- camera's position 0 doubles as its view shot in the PDF export. The cap
+-- is app-enforced, not a DB constraint — same as it was in Postgres.
 -- ---------------------------------------------------------------------------
 CREATE TABLE device_photos (
   id             CHAR(36) NOT NULL DEFAULT (UUID()) PRIMARY KEY,

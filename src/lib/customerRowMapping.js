@@ -51,6 +51,19 @@ function byPosition(rows) {
   return (rows || []).slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
 }
 
+/**
+ * Every device carries `photos` — an ordered list of storage keys, any
+ * number, tied to that one device. Older in-memory objects (a JSON export
+ * from before this, stale localStorage) may still say `viewImage` (camera,
+ * single) or `signImages` (sign, list); read those as photos so nothing is
+ * dropped on the next save.
+ */
+export function devicePhotoPaths(device) {
+  if (Array.isArray(device?.photos)) return device.photos.filter(Boolean);
+  if (Array.isArray(device?.signImages)) return device.signImages.filter(Boolean);
+  return device?.viewImage ? [device.viewImage] : [];
+}
+
 // ---------------------------------------------------------------------------
 // Devices: read side — assemble the legacy device object from a devices row
 // plus every nested table PostgREST embedded under it (see
@@ -73,7 +86,6 @@ function cameraFieldsFromRow(row) {
   } : undefined);
   const stream1 = toStream(stream1Row);
   const stream2 = toStream(stream2Row);
-  const photos = byPosition(row.device_photos);
   const destinations = (row.camera_traffic_destinations || [])
     .map((d) => joinTrafficKey(d.target_level_id, d.target_zone_polygon_id))
     .filter(Boolean);
@@ -100,13 +112,11 @@ function cameraFieldsFromRow(row) {
       destinations,
       comingFrom: details.traffic_coming_from || '',
     },
-    ...(photos[0] ? { viewImage: photos[0].storage_path } : {}),
   };
 }
 
 function signFieldsFromRow(row) {
   const details = oneToOne(row.sign_details) || {};
-  const photos = byPosition(row.device_photos);
   const displayLevelIds = (row.sign_display_levels || []).map((l) => l.level_id ?? l.zone_id).filter(Boolean);
 
   const fields = {
@@ -128,7 +138,6 @@ function signFieldsFromRow(row) {
     sided: details.sided || 'single',
     ...(details.bold_sides?.length ? { boldSides: details.bold_sides } : {}),
     ...(details.logical_key ? { signLogicalKey: details.logical_key } : {}),
-    signImages: photos.map((p) => p.storage_path),
   };
 
   if (details.uses_inserts) {
@@ -185,6 +194,7 @@ export function dbDeviceToLegacy(row) {
     pendingPlacement: Boolean(row.pending_placement),
     iconSize: row.icon_size ?? undefined,
     ...(row.server_name ? { server: row.server_name } : {}),
+    photos: byPosition(row.device_photos).map((p) => p.storage_path),
   };
 
   if (row.family === 'camera') return { ...base, ...cameraFieldsFromRow(row) };
@@ -299,10 +309,6 @@ export function splitLegacyDevice(device, levelId, zoneIdSet) {
         target_level_id: t.levelId,
         target_zone_polygon_id: t.zoneId || null,
       }));
-
-    if (device.viewImage) {
-      result.photos.push({ id: crypto.randomUUID(), device_id: device.id, position: 0, storage_path: device.viewImage });
-    }
   } else if (family === 'sign') {
     result.signDetails = {
       device_id: device.id,
@@ -357,10 +363,6 @@ export function splitLegacyDevice(device, levelId, zoneIdSet) {
           .map((cols) => ({ id: crypto.randomUUID(), insert_id: ins.id, ...cols })),
       }));
     }
-
-    (device.signImages || []).forEach((path, idx) => {
-      if (path) result.photos.push({ id: crypto.randomUUID(), device_id: device.id, position: idx, storage_path: path });
-    });
   } else if (family === 'sensor') {
     result.sensorDetails = {
       device_id: device.id,
@@ -384,6 +386,10 @@ export function splitLegacyDevice(device, levelId, zoneIdSet) {
       }));
     }
   }
+
+  result.photos = devicePhotoPaths(device).map((path, idx) => ({
+    id: crypto.randomUUID(), device_id: device.id, position: idx, storage_path: path,
+  }));
 
   return result;
 }

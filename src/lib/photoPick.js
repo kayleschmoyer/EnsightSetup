@@ -17,7 +17,7 @@ export const MAX_DEVICE_PHOTO_DATA_URL_CHARS = 150_000;
 export const MAX_DEVICE_PHOTO_EDGE = 1600;
 
 /** Cap sign photos so one monument cannot fill the whole layout with photos. */
-export const MAX_SIGN_PHOTOS = 10;
+export const MAX_DEVICE_PHOTOS = 10;
 
 /** Reject absurd source files before decoding (bytes). */
 export const MAX_DEVICE_PHOTO_SOURCE_BYTES = 20 * 1024 * 1024;
@@ -213,8 +213,7 @@ export async function compressOversizedDevicePhotos(sites, options = {}) {
 
   const needsWork = sites.some((site) => (site?.levels ?? []).some((level) => (
     (level?.devices ?? []).some((device) => (
-      isOversizedDevicePhoto(device?.viewImage)
-      || (Array.isArray(device?.signImages) && device.signImages.some(isOversizedDevicePhoto))
+      Array.isArray(device?.photos) && device.photos.some(isOversizedDevicePhoto)
     ))
   )));
   if (!needsWork) return { sites, compressed: 0, savedChars: 0 };
@@ -241,29 +240,13 @@ export async function compressOversizedDevicePhotos(sites, options = {}) {
       let levelChanged = false;
       const nextDevices = [];
       for (const device of devices) {
-        let next = device;
         let changed = false;
+        const photos = [];
 
-        if (isOversizedDevicePhoto(device?.viewImage)) {
-          try {
-            const viewImage = await compress(device.viewImage);
-            if (viewImage && viewImage.length < device.viewImage.length) {
-              compressed += 1;
-              savedChars += device.viewImage.length - viewImage.length;
-              next = { ...next, viewImage };
-              changed = true;
-            }
-          } catch {
-            // Keep original — never drop a photo on compress failure.
-          }
-        }
-
-        if (Array.isArray(device?.signImages) && device.signImages.some(isOversizedDevicePhoto)) {
-          const signImages = [];
-          let signsChanged = false;
-          for (const src of device.signImages) {
+        if (Array.isArray(device?.photos) && device.photos.some(isOversizedDevicePhoto)) {
+          for (const src of device.photos) {
             if (!isOversizedDevicePhoto(src)) {
-              signImages.push(src);
+              photos.push(src);
               continue;
             }
             try {
@@ -271,23 +254,20 @@ export async function compressOversizedDevicePhotos(sites, options = {}) {
               if (shrunk && shrunk.length < src.length) {
                 compressed += 1;
                 savedChars += src.length - shrunk.length;
-                signImages.push(shrunk);
-                signsChanged = true;
+                photos.push(shrunk);
+                changed = true;
               } else {
-                signImages.push(src);
+                photos.push(src);
               }
             } catch {
-              signImages.push(src);
+              // Keep original — never drop a photo on compress failure.
+              photos.push(src);
             }
-          }
-          if (signsChanged) {
-            next = { ...next, signImages };
-            changed = true;
           }
         }
 
         if (changed) levelChanged = true;
-        nextDevices.push(changed ? next : device);
+        nextDevices.push(changed ? { ...device, photos } : device);
       }
 
       nextLevels.push(levelChanged ? { ...level, devices: nextDevices } : level);

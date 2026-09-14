@@ -5,7 +5,7 @@ import {
   isOversizedDevicePhoto,
   MAX_DEVICE_PHOTO_BYTES,
   MAX_DEVICE_PHOTO_DATA_URL_CHARS,
-  MAX_SIGN_PHOTOS,
+  MAX_DEVICE_PHOTOS,
   compressOversizedDevicePhotos,
 } from './photoPick';
 
@@ -77,11 +77,11 @@ describe('MAX_DEVICE_PHOTO_BYTES', () => {
 });
 
 describe('device photo budgets', () => {
-  it('flags oversized photos and caps sign count', () => {
+  it('flags oversized photos and caps the per-device count', () => {
     expect(isOversizedDevicePhoto(small)).toBe(false);
     expect(isOversizedDevicePhoto(oversized)).toBe(true);
-    expect(MAX_SIGN_PHOTOS).toBeGreaterThan(0);
-    expect(MAX_SIGN_PHOTOS).toBeLessThanOrEqual(20);
+    expect(MAX_DEVICE_PHOTOS).toBeGreaterThan(0);
+    expect(MAX_DEVICE_PHOTOS).toBeLessThanOrEqual(20);
   });
 });
 
@@ -91,7 +91,7 @@ describe('compressOversizedDevicePhotos', () => {
       id: 1,
       levels: [{
         id: 11,
-        devices: [{ id: 1, signImages: [small], viewImage: small }],
+        devices: [{ id: 1, photos: [small, small] }],
       }],
     }];
     const compress = vi.fn();
@@ -101,16 +101,12 @@ describe('compressOversizedDevicePhotos', () => {
     expect(compress).not.toHaveBeenCalled();
   });
 
-  it('recompresses viewImage and signImages past the budget', async () => {
+  it('recompresses only the photos past the budget, keeping order', async () => {
     const input = [{
       id: 1,
       levels: [{
         id: 11,
-        devices: [{
-          id: 7,
-          viewImage: oversized,
-          signImages: [oversized, small],
-        }],
+        devices: [{ id: 7, photos: [oversized, small, oversized] }],
       }],
     }];
     const compress = vi.fn().mockResolvedValue(small);
@@ -118,7 +114,6 @@ describe('compressOversizedDevicePhotos', () => {
 
     expect(compress).toHaveBeenCalledTimes(2);
     expect(result.compressed).toBe(2);
-    expect(result.sites[0].levels[0].devices[0].viewImage).toBe(small);
-    expect(result.sites[0].levels[0].devices[0].signImages).toEqual([small, small]);
+    expect(result.sites[0].levels[0].devices[0].photos).toEqual([small, small, small]);
   });
 });
