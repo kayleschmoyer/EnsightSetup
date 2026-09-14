@@ -2,11 +2,15 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import apiRoutes from './vite-plugins/apiRoutes.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
-  plugins: [react()],
+  // apiRoutes serves api/* from the dev server, so `npm run dev` runs the whole
+  // app on its own — the api/ handlers are plain (req, res) Node functions and
+  // don't need Vercel to route them.
+  plugins: [react(), apiRoutes()],
   test: {
     environment: 'node',
     // Browser shims for files that opt into jsdom; no-ops under node.
