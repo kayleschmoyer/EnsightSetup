@@ -65,7 +65,6 @@ import AppSettingsDialog from './AppSettingsDialog';
 import ReportIssueDialog from './ReportIssueDialog';
 import SetupSyncIndicator from './SetupSyncIndicator';
 import { FLOOR_PLAN_ACCEPT, loadFloorPlanBackground } from '../lib/floorPlanBackground';
-import { cleanFloorPlanBlob } from '../lib/floorPlanCleanup';
 import { uploadFloorPlanBackground, deleteStorageObject, FLOOR_PLAN_BUCKET } from '../services/ImageUploadService';
 import { formatFileSize } from '../lib/utils';
 import { LOGICAL_W, LOGICAL_H } from '../lib/canvasConstants';
@@ -263,9 +262,6 @@ export default function EditorView() {
   const [placingDeviceId, setPlacingDeviceId] = useState(null);
   const [focusDeviceId, setFocusDeviceId] = useState(null);
   const [pdfPagePrompt, setPdfPagePrompt] = useState(null);
-  // Holds a loaded-but-not-yet-uploaded background while we ask whether to strip
-  // existing markup off it, so the answer costs one upload rather than two.
-  const [cleanPrompt, setCleanPrompt] = useState(null);
   const [narrowLayout, setNarrowLayout] = useState(false);
   const toastTimerRef = useRef(null);
   const stageRef = useRef(null);
@@ -1167,15 +1163,13 @@ export default function EditorView() {
 
   // ============= Background Image =============
 
-  const applyFloorPlanResult = useCallback(async (result, { silent = false } = {}) => {
+  const applyFloorPlanResult = useCallback(async (result) => {
     if (!currentLevel || !result?.blob) return;
     const oldPath = currentLevel.bgImage;
     const path = await uploadFloorPlanBackground(customer?.id, site?.id, currentLevel.id, result.blob);
     setLevels(levels.map((l) => (l.id === currentLevel.id ? { ...l, bgImage: path } : l)));
     if (oldPath) deleteStorageObject(FLOOR_PLAN_BUCKET, oldPath).catch(() => {});
-    if (silent) {
-      // Caller already said what happened (see finishFloorPlanUpload).
-    } else if (result.sourceType === 'pdf') {
+    if (result.sourceType === 'pdf') {
       showToast(
         result.pageCount > 1
           ? `Background set from PDF page ${result.pageNumber} of ${result.pageCount}`
@@ -1193,36 +1187,6 @@ export default function EditorView() {
     }
   }, [currentLevel, levels, setLevels, showToast, customer, site]);
 
-  /**
-   * Upload a loaded background, optionally stripping existing device markup off
-   * it first. Plans handed over by a customer often already have someone else's
-   * cameras and signs drawn on, which fight with the ones placed in the editor.
-   */
-  const finishFloorPlanUpload = useCallback(async (result, { clean, file } = {}) => {
-    let applied = result;
-
-    if (clean) {
-      const { blob, removedPixels, removedRatio } = await cleanFloorPlanBlob(result.blob);
-      applied = { ...result, blob };
-      if (!removedPixels) {
-        showToast('No markings found to clean — background used as uploaded.', { duration: 5000 });
-      } else {
-        showToast(
-          `Background cleaned · removed markings from ${(removedRatio * 100).toFixed(1)}% of the plan`,
-          { duration: 5000 },
-        );
-      }
-    }
-
-    // A clean pass reports its own outcome above; let it stand rather than
-    // stacking the generic "background updated" toast on top of it.
-    await applyFloorPlanResult(applied, { silent: Boolean(clean) });
-
-    if (file && result.sourceType === 'pdf' && result.pageCount > 1) {
-      setPdfPagePrompt({ file, pageCount: result.pageCount, clean: Boolean(clean) });
-    }
-  }, [applyFloorPlanResult, showToast]);
-
   const handleBgUpload = useCallback(async (e) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -1231,44 +1195,30 @@ export default function EditorView() {
     setBgUploading(true);
     try {
       const result = await loadFloorPlanBackground(file, { pageNumber: 1 });
-      // Ask before uploading — the answer decides which image gets stored.
-      setCleanPrompt({ file, result });
+      await applyFloorPlanResult(result);
+      if (result.sourceType === 'pdf' && result.pageCount > 1) {
+        setPdfPagePrompt({ file, pageCount: result.pageCount });
+      }
     } catch (err) {
       showToast(err.message || 'Failed to load floor plan background.', { duration: 5000 });
     } finally {
       setBgUploading(false);
     }
-  }, [currentLevel, showToast]);
-
-  const handleCleanChoice = useCallback(async (clean) => {
-    if (!cleanPrompt?.result) return;
-    const { result, file } = cleanPrompt;
-    setCleanPrompt(null);
-    setBgUploading(true);
-    try {
-      await finishFloorPlanUpload(result, { clean, file });
-    } catch (err) {
-      showToast(err.message || 'Failed to apply floor plan background.', { duration: 5000 });
-    } finally {
-      setBgUploading(false);
-    }
-  }, [cleanPrompt, finishFloorPlanUpload, showToast]);
+  }, [currentLevel, applyFloorPlanResult, showToast]);
 
   const handlePdfPageConfirm = useCallback(async (pageNumber) => {
     if (!pdfPagePrompt?.file) return;
     setBgUploading(true);
     try {
       const result = await loadFloorPlanBackground(pdfPagePrompt.file, { pageNumber });
-      // Carry the answer already given for this file — re-asking per page would
-      // be nagging, and mixing cleaned/uncleaned pages is never what's wanted.
-      await finishFloorPlanUpload(result, { clean: pdfPagePrompt.clean });
+      await applyFloorPlanResult(result);
       setPdfPagePrompt(null);
     } catch (err) {
       showToast(err.message || 'Failed to load PDF page.', { duration: 5000 });
     } finally {
       setBgUploading(false);
     }
-  }, [pdfPagePrompt, finishFloorPlanUpload, showToast]);
+  }, [pdfPagePrompt, applyFloorPlanResult, showToast]);
 
   const clearBackground = useCallback(() => {
     if (!currentLevel?.bgImage) return;
@@ -2158,29 +2108,6 @@ export default function EditorView() {
               }}
             >
               Confirm
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Strip existing markup off an uploaded plan before it's stored */}
-      <Dialog open={!!cleanPrompt} onOpenChange={(open) => { if (!open) handleCleanChoice(false); }}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Does this need cleaning?</DialogTitle>
-            <DialogDescription>
-              If the plan already has cameras, signs or other markings drawn on it,
-              cleaning removes them and leaves the bare floor plan to work from.
-              Markings drawn in plain black or grey can&apos;t be told apart from the
-              plan itself and will stay.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => handleCleanChoice(false)}>
-              No, use as-is
-            </Button>
-            <Button type="button" onClick={() => handleCleanChoice(true)}>
-              Yes, clean it
             </Button>
           </DialogFooter>
         </DialogContent>
