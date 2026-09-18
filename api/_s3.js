@@ -5,7 +5,7 @@
  * invocations reuse the client instead of re-creating it per request, same
  * pattern as api/_db.js's connection pool.
  *
- * Credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION) are
+ * Credentials (S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY/S3_REGION) are
  * server-side only — never prefixed with VITE_. Every object this app writes
  * MUST live under the SETUP_APP_PREFIX key prefix; the bucket also serves
  * other, unrelated apps at its root, so a key outside that prefix is refused
@@ -20,17 +20,17 @@ let client;
 
 export function getS3Client() {
   if (!client) {
-    const { AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION } = process.env;
-    if (!AWS_ACCESS_KEY_ID || !AWS_SECRET_ACCESS_KEY || !AWS_REGION) {
+    const { S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_REGION } = process.env;
+    if (!S3_ACCESS_KEY_ID || !S3_SECRET_ACCESS_KEY || !S3_REGION) {
       throw new Error(
-        'S3 image storage is not configured: missing AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION env vars.',
+        'S3 image storage is not configured: missing S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY/S3_REGION env vars.',
       );
     }
     client = new S3Client({
-      region: AWS_REGION,
+      region: S3_REGION,
       credentials: {
-        accessKeyId: AWS_ACCESS_KEY_ID,
-        secretAccessKey: AWS_SECRET_ACCESS_KEY,
+        accessKeyId: S3_ACCESS_KEY_ID,
+        secretAccessKey: S3_SECRET_ACCESS_KEY,
       },
     });
   }
@@ -38,9 +38,9 @@ export function getS3Client() {
 }
 
 export function getS3Bucket() {
-  const bucket = process.env.AWS_S3_BUCKET;
+  const bucket = process.env.S3_BUCKET;
   if (!bucket) {
-    throw new Error('S3 image storage is not configured: missing AWS_S3_BUCKET env var.');
+    throw new Error('S3 image storage is not configured: missing S3_BUCKET env var.');
   }
   return bucket;
 }
@@ -70,6 +70,6 @@ export function assertSetupAppKey(key) {
 export function publicObjectUrl(key) {
   assertSetupAppKey(key);
   const bucket = getS3Bucket();
-  const region = process.env.AWS_REGION;
+  const region = process.env.S3_REGION;
   return `https://s3.${region}.amazonaws.com/${bucket}/${key}`;
 }
